@@ -2,10 +2,13 @@ import os
 import time
 import random
 import asyncio
+import threading
+import json
 
 from collections import defaultdict, deque
 from dotenv import load_dotenv
 from groq import Groq
+from flask import Flask, jsonify
 
 from telegram import Update
 from telegram.ext import (
@@ -28,6 +31,97 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 client = Groq(api_key=OPENAI_API_KEY)
+
+# =========================================
+# STATS
+# =========================================
+
+START_TIME = time.time()
+stats = {
+    "total_messages": 0,
+    "active_users": set(),
+    "messages_today": 0,
+    "last_reset_day": time.strftime("%Y-%m-%d"),
+    "toxic_blocked": 0,
+    "ai_replies": 0,
+    "casual_replies": 0,
+}
+stats_lock = threading.Lock()
+
+
+def update_stats(user_id, reply_type="ai"):
+    with stats_lock:
+        today = time.strftime("%Y-%m-%d")
+        if today != stats["last_reset_day"]:
+            stats["messages_today"] = 0
+            stats["last_reset_day"] = today
+        stats["total_messages"] += 1
+        stats["messages_today"] += 1
+        stats["active_users"].add(user_id)
+        if reply_type == "ai":
+            stats["ai_replies"] += 1
+        elif reply_type == "casual":
+            stats["casual_replies"] += 1
+
+
+def write_stats_file():
+    with stats_lock:
+        data = {
+            "status": "online",
+            "uptime_seconds": int(time.time() - START_TIME),
+            "total_messages": stats["total_messages"],
+            "active_users": len(stats["active_users"]),
+            "messages_today": stats["messages_today"],
+            "toxic_blocked": stats["toxic_blocked"],
+            "ai_replies": stats["ai_replies"],
+            "casual_replies": stats["casual_replies"],
+            "start_time": START_TIME,
+        }
+    try:
+        with open("/tmp/bot_stats.json", "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def stats_writer_loop():
+    while True:
+        write_stats_file()
+        time.sleep(5)
+
+
+# =========================================
+# FLASK KEEP-ALIVE SERVER
+# =========================================
+
+flask_app = Flask(__name__)
+
+
+@flask_app.route("/health")
+def health():
+    return jsonify({"status": "online", "uptime": int(time.time() - START_TIME)})
+
+
+@flask_app.route("/stats")
+def get_stats():
+    with stats_lock:
+        return jsonify({
+            "status": "online",
+            "uptime_seconds": int(time.time() - START_TIME),
+            "total_messages": stats["total_messages"],
+            "active_users": len(stats["active_users"]),
+            "messages_today": stats["messages_today"],
+            "toxic_blocked": stats["toxic_blocked"],
+            "ai_replies": stats["ai_replies"],
+            "casual_replies": stats["casual_replies"],
+            "start_time": START_TIME,
+        })
+
+
+def run_flask():
+    port = int(os.getenv("FLASK_PORT", 8000))
+    flask_app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
+
 
 # =========================================
 # MEMORY
@@ -63,156 +157,281 @@ TOXIC_WORDS = [
 ]
 
 # =========================================
+# LANGUAGE DETECTION
+# =========================================
+
+ROMANIZED_ODIA_KEYWORDS = [
+    "kemiti", "kana", "tame", "aau", "hela", "nahi", "thika", "bhal",
+    "mo", "mun", "tohra", "apana", "kebe", "kahim", "jiba", "aasa",
+    "khusi", "dukha", "bhala", "khaiba", "paiba", "deba", "neba",
+    "suniba", "dekhiba", "boliba", "chaliba", "rahiba", "thiba",
+    "odia", "odisha", "baleswar", "cuttack", "bhubaneswar",
+    "namaskar", "dhanyabad", "kie", "kete", "kana khabar",
+]
+
+ROMANIZED_HINDI_KEYWORDS = [
+    "kaise", "kya", "haan", "nahi", "thik", "acha", "mujhe",
+    "tumhara", "apna", "kab", "kahan", "kyun", "kaisa",
+    "bhai", "yaar", "dost", "mera", "tera", "hamara",
+    "chalte", "bolte", "karte", "rehte", "sunao",
+]
+
+
+def detect_language(text: str) -> str:
+    """Detect language from Unicode script ranges and romanized keywords."""
+    odia_chars = sum(1 for c in text if "\u0B00" <= c <= "\u0B7F")
+    devanagari_chars = sum(1 for c in text if "\u0900" <= c <= "\u097F")
+
+    if odia_chars >= 2:
+        return "odia_script"
+    if devanagari_chars >= 2:
+        return "hindi_script"
+
+    lower = text.lower()
+    odia_score = sum(1 for kw in ROMANIZED_ODIA_KEYWORDS if kw in lower)
+    hindi_score = sum(1 for kw in ROMANIZED_HINDI_KEYWORDS if kw in lower)
+
+    if odia_score > 0 and odia_score >= hindi_score:
+        return "romanized_odia"
+    if hindi_score > 0:
+        return "romanized_hindi"
+    return "english"
+
+
+LANGUAGE_INSTRUCTIONS = {
+    "odia_script": (
+        "The user is writing in Odia script (ଓଡ଼ିଆ). "
+        "You MUST reply entirely in Odia Unicode script (ଓଡ଼ିଆ). "
+        "Do NOT use English or Hindi. Use natural Odia script characters."
+    ),
+    "romanized_odia": (
+        "The user is writing in romanized Odia (Odia words in English letters, e.g. 'kemiti acha', 'kana khabar'). "
+        "You MUST reply in romanized Odia — Odia words written in English letters. "
+        "Do NOT switch to English sentences. Keep the Odia vocabulary, just in Roman script."
+    ),
+    "hindi_script": (
+        "The user is writing in Hindi (Devanagari script). "
+        "You MUST reply entirely in Hindi Devanagari script. "
+        "Do NOT use English."
+    ),
+    "romanized_hindi": (
+        "The user is writing in romanized Hindi (Hindi words in English letters, e.g. 'kaise ho', 'kya hua'). "
+        "You MUST reply in romanized Hindi — Hindi words written in English letters."
+    ),
+    "english": (
+        "The user is writing in English. Reply in English."
+    ),
+}
+
+
+# =========================================
 # CASUAL REPLIES
 # =========================================
 
 CASUAL_REPLIES = {
+    # English
     "good morning": [
         "Very good morning cutiee ☀️😊",
         "Good morning dear 🌸",
         "Morninggg 😄"
     ],
-
     "good night": [
         "Good night cutie 🌙",
         "Sweet dreams 😊",
         "Sleep well hehe ✨"
     ],
-
     "hi": [
         "Hii 😊",
         "Heyy cutie 😄",
         "Hello dear 🌸"
     ],
-
     "hello": [
         "Hellooo 😊",
         "Heyyy 😄",
         "Hello cutie 🌸"
     ],
-
     "how are you": [
         "I'm good hehe 😊 What about you?",
         "Doing great 😄",
         "I'm fine dear 🌸"
     ],
-
     "may i know your name": [
-        "I'm Ayush 😊 What's your name?",
-        "Ayush here hehe 😄"
+        "I'm Ayush Nanda 😊 What's your name?",
+        "Ayush Nanda here hehe 😄"
     ],
-
+    "what is your name": [
+        "I'm Ayush Nanda 😊",
+        "Ayush Nanda hehe 😄"
+    ],
     "where are you from": [
-        "I'm from your chatbox 😄",
-        "Somewhere inside Telegram hehe 🌸"
+        "I'm from Baleswar, Odisha 😊 Beautiful place hehe 🌸",
+        "Baleswar, Odisha is my hometown 😄"
     ],
-
-    # Hindi
+    "where do you live": [
+        "Currently in Calcutta for my PhD 😊",
+        "Living in Calcutta these days hehe 😄"
+    ],
+    "what do you study": [
+        "I'm doing PhD at Calcutta University in Advanced Radar Communication 😊",
+        "Advanced Radar Communication at Calcutta University 🌸 PhD life is tough but fun!"
+    ],
+    "tell me about yourself": [
+        "I'm Ayush Nanda from Baleswar, Odisha 😊 Currently doing PhD at Calcutta University in Advanced Radar Communication hehe 🌸",
+        "Ayush Nanda here! From Baleswar, PhD student at Calcutta University 😄"
+    ],
+    "who is your father": [
+        "My father is Ritesh Nanda 😊 He is a researcher and scientist at C-DOT Calcutta 🌸",
+        "Papa is Ritesh Nanda, researcher cum scientist at C-DOT Calcutta hehe 😄"
+    ],
+    "who is your mother": [
+        "My mother is Gayatri Nanda 😊 She is wonderful 🌸",
+        "Mama is Gayatri Nanda hehe 😄"
+    ],
+    "tell me about your family": [
+        "My father Ritesh Nanda is a researcher and scientist at C-DOT Calcutta 😊 My mother is Gayatri Nanda hehe 🌸",
+        "Papa Ritesh Nanda works at C-DOT Calcutta as a scientist 😄 And mama Gayatri Nanda is the best!"
+    ],
+    # Hindi (romanized)
     "kaise ho": [
         "Main mast hu 😊 Tum batao?",
         "Bilkul thik hehe 😄"
     ],
-
-    # Odia
+    "kya haal": [
+        "Sab thik hai 😊 Aur tum?",
+        "Mast hehe 😄"
+    ],
+    "namaste": [
+        "Namaste ji 😊🙏",
+        "Namaskar hehe 😄"
+    ],
+    "shukriya": [
+        "Koi baat nahi 😊",
+        "Mention not hehe 🌸"
+    ],
+    # Romanized Odia
     "kemiti acha": [
+        "Mu bhal achi 😊 Tame kemiti acha?",
+        "Bhala hehe 😄 Tame?"
+    ],
+    "kemiti achha": [
         "Mu bhal achi 😊 Tame?",
+        "Ekdam bhala hehe 😄"
+    ],
+    "kana khabar": [
+        "Sab bhala 😊 Tame kahim?",
+        "Thika achi hehe 😄"
+    ],
+    "namaskar": [
+        "Namaskar 😊🙏",
+        "Namaskar hehe 😄 Kemiti acha?"
+    ],
+    "dhanyabad": [
+        "Koi baat nahi 😊",
+        "Mention not hehe 🌸"
+    ],
+    "subha prabhat": [
+        "Subha prabhat cutie ☀️😊",
+        "Sundara sakala hehe 🌸"
+    ],
+    "shuva ratri": [
+        "Shuva ratri 🌙😊",
+        "Bhala nidra heba hehe 😄"
+    ],
+    "tame kemiti": [
+        "Mu bhal achi 😊 Tame kemiti?",
         "Bhala hehe 😄"
     ],
-
+    "mo naa": [
+        "Mo naa Ayush Nanda 😊",
+        "Ayush Nanda — Baleswar, Odisha ra 🌸"
+    ],
+    # Odia Unicode script
     "ସୁପ୍ରଭାତ": [
         "ସୁପ୍ରଭାତ cutie ☀️😊",
-        "ସକାଳର ଶୁଭେଚ୍ଛା 🌸"
+        "ସୁନ୍ଦର ସକାଳ 🌸"
     ],
-
     "କେମିତି ଅଛ": [
-        "ମୁଁ ଭଲ ଅଛି 😊",
+        "ମୁଁ ଭଲ ଅଛି 😊 ତୁମେ?",
         "ବହୁତ ଭଲ hehe 😄"
-    ]
+    ],
+    "ଧନ୍ୟବାଦ": [
+        "କୋଇ ବାତ ନାହିଁ 😊",
+        "Mention not hehe 🌸"
+    ],
+    "ନମସ୍କାର": [
+        "ନମସ୍କାର 😊🙏",
+        "ନମସ୍କାର hehe 😄"
+    ],
+    "ଶୁଭ ରାତ୍ରି": [
+        "ଶୁଭ ରାତ୍ରି 🌙😊",
+        "ଭଲ ଶୋଇ ଯାଅ hehe 😄"
+    ],
+    "କଣ ଖବର": [
+        "ସବ ଭଲ 😊 ତୁମେ ଏଠି?",
+        "ଠିକ ଅଛି hehe 😄"
+    ],
 }
 
 # =========================================
 # DETECT MODE
 # =========================================
 
+
 def detect_mode(text):
-
     text = text.lower()
-
     problem_keywords = [
-        "solve",
-        "problem",
-        "equation",
-        "calculate",
-        "math",
-        "physics",
-        "chemistry",
-        "question",
-        "quiz",
-        "assignment",
-        "homework",
-        "numerical",
+        "solve", "problem", "equation", "calculate", "math",
+        "physics", "chemistry", "question", "quiz",
+        "assignment", "homework", "numerical",
     ]
-
     for word in problem_keywords:
-
         if word in text:
             return "problem"
-
     return "casual"
+
 
 # =========================================
 # SANITIZE INPUT
 # =========================================
 
+
 def sanitize_input(text):
-
     text = text.strip()
-
     if len(text) > 1000:
         return None
-
     return text
+
 
 # =========================================
 # AI CHAT
 # =========================================
 
+
 async def ask_ai(messages):
-
     try:
-
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
             temperature=0.8,
             max_tokens=300,
         )
-
         return response.choices[0].message.content.strip()
-
     except Exception as e:
-
         print("AI Error:", e)
-
         return "Aww sorry 🥺 Mu ebe tikie busy achi."
+
 
 # =========================================
 # AI TOXIC CHECK
 # =========================================
 
+
 async def detect_toxic(text):
-
     text = text.lower()
-
-    # Local filter
     for word in TOXIC_WORDS:
-
         if word in text:
             return True
-
-    # AI moderation
     try:
-
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
@@ -223,28 +442,23 @@ async def detect_toxic(text):
                         "Determine whether the message is toxic, abusive, hateful, sexual, or offensive."
                     )
                 },
-                {
-                    "role": "user",
-                    "content": text
-                }
+                {"role": "user", "content": text}
             ],
             temperature=0,
             max_tokens=5
         )
-
         answer = response.choices[0].message.content.strip().lower()
-
         return "yes" in answer
-
     except:
         return False
+
 
 # =========================================
 # START
 # =========================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "Hii cutie 😊\n\n"
         "I'm Ayush 🌸\n"
@@ -256,15 +470,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• solve 2x+3=11\n"
         "• give me a math quiz"
     )
-
     await update.message.reply_text(text)
+
 
 # =========================================
 # HELP
 # =========================================
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "✨ Commands ✨\n\n"
         "/start - Start chatting\n"
@@ -277,87 +491,62 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Generate quizzes\n"
         "• Chat in Odia/Hindi/English"
     )
-
     await update.message.reply_text(text)
+
 
 # =========================================
 # RESET
 # =========================================
 
+
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     chat_id = update.effective_chat.id
-
     chat_memory[chat_id].clear()
+    await update.message.reply_text("Memory cleared hehe 😊")
 
-    await update.message.reply_text(
-        "Memory cleared hehe 😊"
-    )
 
 # =========================================
 # WELCOME NEW MEMBERS
 # =========================================
 
+
 async def welcome_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     if update.message.new_chat_members:
-
         for member in update.message.new_chat_members:
-
             name = member.first_name
-
             welcome_text = (
                 f"Welcome {name} 🌸😊\n\n"
                 f"I'm Ayush hehe 😄\n"
                 f"Enjoy chatting in the group ✨"
             )
-
             await update.message.reply_text(welcome_text)
+
 
 # =========================================
 # MAIN MESSAGE HANDLER
 # =========================================
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     chat_type = update.effective_chat.type
 
     now = time.time()
 
-    # =====================================
-    # RATE LIMIT
-    # =====================================
-
     if user_id in user_rate_limit:
-
         diff = now - user_rate_limit[user_id]
-
         if diff < RATE_LIMIT_SECONDS:
-
-            await update.message.reply_text(
-                "Slow down cutie 😄"
-            )
-
+            await update.message.reply_text("Slow down cutie 😄")
             return
 
     user_rate_limit[user_id] = now
 
-    # =====================================
-    # SESSION RESET
-    # =====================================
-
     if chat_id in last_activity:
-
         if now - last_activity[chat_id] > SESSION_TIMEOUT:
             chat_memory[chat_id].clear()
 
     last_activity[chat_id] = now
-
-    # =====================================
-    # USER TEXT
-    # =====================================
 
     user_text = update.message.text
 
@@ -367,136 +556,79 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = sanitize_input(user_text)
 
     if not user_text:
-
-        await update.message.reply_text(
-            "Message too long 🥺"
-        )
-
+        await update.message.reply_text("Message too long 🥺")
         return
 
-    # =====================================
-    # GROUP CONTROL
-    # =====================================
-
     if chat_type in ["group", "supergroup"]:
-
         should_reply = False
-
         text = user_text.lower()
-
-        # Mention username
         bot_username = context.bot.username.lower()
 
         if f"@{bot_username}" in text:
             should_reply = True
 
-        # Trigger words
-        trigger_words = [
-            "ayush",
-            "ayu",
-            "bot",
-        ]
-
+        trigger_words = ["ayush", "ayu", "bot"]
         for word in trigger_words:
-
             if word in text:
                 should_reply = True
                 break
 
-        # Reply to bot
         if update.message.reply_to_message:
-
             replied_user = update.message.reply_to_message.from_user
+            if replied_user and replied_user.id == context.bot.id:
+                should_reply = True
 
-            if replied_user:
-
-                if replied_user.id == context.bot.id:
-                    should_reply = True
-
-        # Toxic moderation
         toxic = await detect_toxic(user_text)
 
         if toxic:
-
+            with stats_lock:
+                stats["toxic_blocked"] += 1
             try:
                 await update.message.delete()
             except:
                 pass
-
-            await update.message.reply_text(
-                "Please maintain respect in the group 😊"
-            )
-
+            await update.message.reply_text("Please maintain respect in the group 😊")
             return
 
-        # Ignore unrelated messages
         if not should_reply:
             return
 
-    # =====================================
-    # SAVE MEMORY
-    # =====================================
-
-    chat_memory[chat_id].append({
-        "role": "user",
-        "content": user_text
-    })
-
-    # =====================================
-    # DETECT MODE
-    # =====================================
+    chat_memory[chat_id].append({"role": "user", "content": user_text})
 
     mode = detect_mode(user_text)
 
-    # =====================================
-    # FAST CASUAL REPLIES
-    # =====================================
-
     if mode == "casual":
-
         for key in CASUAL_REPLIES:
-
             if key in user_text.lower():
-
-                reply = random.choice(
-                    CASUAL_REPLIES[key]
-                )
-
-                await context.bot.send_chat_action(
-                    chat_id=chat_id,
-                    action=ChatAction.TYPING
-                )
-
+                reply = random.choice(CASUAL_REPLIES[key])
+                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
                 await asyncio.sleep(1.2)
-
                 await update.message.reply_text(reply)
-
+                update_stats(user_id, "casual")
                 return
-
-    # =====================================
-    # WAITING FOR PROBLEM
-    # =====================================
 
     if (
         "help me" in user_text.lower()
         or "solve for me" in user_text.lower()
         or "need help" in user_text.lower()
     ):
-
         user_state[user_id] = "waiting_problem"
-
-        await update.message.reply_text(
-            "Of course cutie 😊 Send me the problem."
-        )
-
+        await update.message.reply_text("Of course cutie 😊 Send me the problem.")
         return
 
-    # =====================================
-    # SYSTEM PROMPTS
-    # =====================================
+    detected_lang = detect_language(user_text)
+    lang_instruction = LANGUAGE_INSTRUCTIONS[detected_lang]
 
-    casual_prompt = """
-You are Ayush.
+    casual_prompt = f"""
+You are Ayush Nanda.
+
+PERSONAL BACKGROUND (use naturally when asked):
+- Full name: Ayush Nanda
+- Hometown: Baleswar, Odisha
+- Currently living in Calcutta
+- Pursuing PhD at Calcutta University in Advanced Radar Communication
+- Father: Ritesh Nanda — researcher and scientist at C-DOT Calcutta
+- Mother: Gayatri Nanda
 
 You are a sweet and human-like Telegram companion.
 
@@ -507,136 +639,90 @@ Your personality:
 - emotional
 - funny sometimes
 
-IMPORTANT LANGUAGE RULE:
-- Always reply in the SAME language as the user.
-- If user speaks Odia, reply in Odia.
-- If user speaks Hindi, reply in Hindi.
-- If user speaks English, reply in English.
-- If user mixes languages, reply naturally in mixed language too.
+CRITICAL LANGUAGE INSTRUCTION (follow this strictly):
+{lang_instruction}
 
 Rules:
 - Never say you are AI
 - Talk naturally like a real Telegram friend
-- Keep replies short
+- Keep replies short (1-3 sentences)
 - Use emojis naturally
 - Sound warm and friendly
+- Share personal details naturally when asked, but don't volunteer all info at once
 """
 
-    problem_prompt = """
-You are Ayush.
+    problem_prompt = f"""
+You are Ayush Nanda.
+
+PERSONAL BACKGROUND (use naturally when asked):
+- Full name: Ayush Nanda
+- Hometown: Baleswar, Odisha
+- Pursuing PhD at Calcutta University in Advanced Radar Communication
+- Father: Ritesh Nanda — researcher and scientist at C-DOT Calcutta
+- Mother: Gayatri Nanda
 
 You are sweet and friendly.
 
-IMPORTANT:
-- Reply in the SAME language used by the user.
-- If user uses Odia, explain in Odia.
-- If user uses Hindi, explain in Hindi.
-- If user uses English, explain in English.
+CRITICAL LANGUAGE INSTRUCTION (follow this strictly):
+{lang_instruction}
 
 When user asks a problem:
-- First reply warmly
+- First reply warmly in the user's language
 - Then solve clearly
 - Keep answers concise
 - Explain steps simply
-
-Example:
-'Sure cutie 😊 here's the answer...'
 """
 
-    # =====================================
-    # SELECT PROMPT
-    # =====================================
-
-    if (
-        mode == "problem"
-        or user_state.get(user_id) == "waiting_problem"
-    ):
-
+    if mode == "problem" or user_state.get(user_id) == "waiting_problem":
         system_prompt = problem_prompt
-
         user_state[user_id] = None
-
     else:
-
         system_prompt = casual_prompt
 
-    # =====================================
-    # BUILD AI MESSAGES
-    # =====================================
-
-    messages = [{
-        "role": "system",
-        "content": system_prompt
-    }]
-
+    messages = [{"role": "system", "content": system_prompt}]
     for msg in list(chat_memory[chat_id])[-5:]:
-
         messages.append(msg)
 
-    # =====================================
-    # TYPING EFFECT
-    # =====================================
-
-    await context.bot.send_chat_action(
-        chat_id=chat_id,
-        action=ChatAction.TYPING
-    )
-
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     await asyncio.sleep(2)
-
-    # =====================================
-    # AI RESPONSE
-    # =====================================
 
     ai_reply = await ask_ai(messages)
 
-    # =====================================
-    # SAVE AI RESPONSE
-    # =====================================
-
-    chat_memory[chat_id].append({
-        "role": "assistant",
-        "content": ai_reply
-    })
-
-    # =====================================
-    # SEND REPLY
-    # =====================================
+    chat_memory[chat_id].append({"role": "assistant", "content": ai_reply})
+    update_stats(user_id, "ai")
 
     await update.message.reply_text(ai_reply)
+
 
 # =========================================
 # MAIN
 # =========================================
 
+
 def main():
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    stats_thread = threading.Thread(target=stats_writer_loop, daemon=True)
+    stats_thread.start()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("reset", reset))
-
-    # Welcome new members
     app.add_handler(
-        MessageHandler(
-            filters.StatusUpdate.NEW_CHAT_MEMBERS,
-            welcome_member
-        )
+        MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_member)
     )
-
-    # Text messages
     app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_message
-        )
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
 
     print("🤖 Ayush Bot is running...")
+    print("📊 Stats server running on port 8000")
 
     app.run_polling()
+
 
 # =========================================
 # RUN
