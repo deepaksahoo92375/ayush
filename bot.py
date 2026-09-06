@@ -4,10 +4,12 @@ import random
 import asyncio
 import threading
 import json
+from functools import partial
 
 from collections import defaultdict, deque
 from dotenv import load_dotenv
-from groq import Groq
+from google import genai
+from openai import OpenAI
 from flask import Flask, jsonify
 
 from telegram import Update
@@ -28,9 +30,14 @@ from telegram.constants import ChatAction
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-client = Groq(api_key=OPENAI_API_KEY)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # =========================================
 # STATS
@@ -403,22 +410,80 @@ def sanitize_input(text):
 
 
 # =========================================
+# AI PROVIDERS (Gemini primary, OpenAI fallback)
+# =========================================
+
+
+def _messages_to_gemini(messages):
+    """Convert OpenAI-style chat messages into a Gemini system_instruction + contents list."""
+    system_instruction = None
+    contents = []
+    for m in messages:
+        role = m["role"]
+        content = m["content"]
+        if role == "system":
+            system_instruction = content if system_instruction is None else f"{system_instruction}\n{content}"
+        elif role == "user":
+            contents.append({"role": "user", "parts": [{"text": content}]})
+        elif role == "assistant":
+            contents.append({"role": "model", "parts": [{"text": content}]})
+    return system_instruction, contents
+
+
+def _call_gemini(messages, max_tokens=300, temperature=0.8):
+    if not gemini_client:
+        raise RuntimeError("GEMINI_API_KEY not set")
+
+    system_instruction, contents = _messages_to_gemini(messages)
+    response = gemini_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=contents,
+        config={
+            "system_instruction": system_instruction,
+            "max_output_tokens": max_tokens,
+            "temperature": temperature,
+        },
+    )
+    text = (response.text or "").strip()
+    if not text:
+        raise RuntimeError("Empty response from Gemini")
+    return text
+
+
+def _call_openai(messages, max_tokens=300, temperature=0.8):
+    if not openai_client:
+        raise RuntimeError("OPENAI_API_KEY not set")
+
+    response = openai_client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=messages,
+        max_completion_tokens=max_tokens,
+    )
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise RuntimeError("Empty response from OpenAI")
+    return text
+
+
+# =========================================
 # AI CHAT
 # =========================================
 
 
 async def ask_ai(messages):
+    loop = asyncio.get_event_loop()
+
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages,
-            temperature=0.8,
-            max_tokens=300,
-        )
-        return response.choices[0].message.content.strip()
+        return await loop.run_in_executor(None, partial(_call_gemini, messages, 300, 0.8))
     except Exception as e:
-        print("AI Error:", e)
-        return "Aww sorry 🥺 Mu ebe tikie busy achi."
+        print("Gemini Error:", e)
+
+    try:
+        return await loop.run_in_executor(None, partial(_call_openai, messages, 300, 0.8))
+    except Exception as e:
+        print("OpenAI Error:", e)
+
+    return "Aww sorry 🥺 Mu ebe tikie busy achi."
 
 
 # =========================================
@@ -427,30 +492,37 @@ async def ask_ai(messages):
 
 
 async def detect_toxic(text):
-    text = text.lower()
+    lowered = text.lower()
     for word in TOXIC_WORDS:
-        if word in text:
+        if word in lowered:
             return True
+
+    moderation_messages = [
+        {
+            "role": "system",
+            "content": (
+                "Reply ONLY with YES or NO. "
+                "Determine whether the message is toxic, abusive, hateful, sexual, or offensive."
+            ),
+        },
+        {"role": "user", "content": text},
+    ]
+
+    loop = asyncio.get_event_loop()
+
     try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Reply ONLY with YES or NO. "
-                        "Determine whether the message is toxic, abusive, hateful, sexual, or offensive."
-                    )
-                },
-                {"role": "user", "content": text}
-            ],
-            temperature=0,
-            max_tokens=5
-        )
-        answer = response.choices[0].message.content.strip().lower()
-        return "yes" in answer
-    except:
-        return False
+        answer = await loop.run_in_executor(None, partial(_call_gemini, moderation_messages, 5, 0))
+        return "yes" in answer.strip().lower()
+    except Exception as e:
+        print("Gemini toxic-check error:", e)
+
+    try:
+        answer = await loop.run_in_executor(None, partial(_call_openai, moderation_messages, 5, 0))
+        return "yes" in answer.strip().lower()
+    except Exception as e:
+        print("OpenAI toxic-check error:", e)
+
+    return False
 
 
 # =========================================
