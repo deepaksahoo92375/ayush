@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from google import genai
 from openai import OpenAI
 from flask import Flask, jsonify
+from flask_cors import CORS
 
 from telegram import Update
 from telegram.ext import (
@@ -102,6 +103,7 @@ def stats_writer_loop():
 # =========================================
 
 flask_app = Flask(__name__)
+CORS(flask_app, resources={r"/health": {"origins": "*"}, r"/stats": {"origins": "*"}})
 
 
 @flask_app.route("/health")
