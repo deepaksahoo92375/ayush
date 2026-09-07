@@ -14,7 +14,7 @@ from openai import OpenAI
 from flask import Flask, jsonify
 from flask_cors import CORS
 
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
@@ -864,6 +864,68 @@ async def detect_toxic(text):
     return False
 
 
+
+# =========================================================
+# USER-FRIENDLY TELEGRAM UI
+# =========================================================
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [
+            KeyboardButton("💬 Chat with Ayush"),
+            KeyboardButton("🧮 Solve a Problem"),
+        ],
+        [
+            KeyboardButton("📚 Study Help"),
+            KeyboardButton("🧠 Reset Memory"),
+        ],
+        [
+            KeyboardButton("ℹ️ Help"),
+        ],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+WELCOME_TEXT = (
+    "👋 <b>Hey! I'm Ayush</b>\n\n"
+    "I'm your friendly AI companion and study assistant. 😊\n\n"
+    "You can simply type whatever you want — no commands needed.\n\n"
+    "✨ <b>I can help with:</b>\n"
+    "• 💬 Casual conversation\n"
+    "• 📚 Study & explanations\n"
+    "• 🧮 Maths & numericals\n"
+    "• 🔬 Physics & engineering\n"
+    "• 💻 Coding & technical questions\n\n"
+    "Choose something below or just start chatting 👇"
+)
+
+
+def get_display_name(user):
+    if not user:
+        return "there"
+
+    name = (user.first_name or "").strip()
+
+    if name:
+        return name
+
+    return "there"
+
+
+async def send_long_message(message, text):
+    """Send long AI replies safely within Telegram's message limit."""
+    if not text:
+        return
+
+    chunk_size = 4000
+
+    for start_index in range(0, len(text), chunk_size):
+        await message.reply_text(
+            text[start_index:start_index + chunk_size]
+        )
+
+
 # =========================================================
 # TELEGRAM COMMANDS
 # =========================================================
@@ -877,16 +939,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat:
         known_chats[update.effective_chat.id] = True
 
+    # Starting a fresh interaction should not wipe existing memory.
+    # It only registers the user and shows the welcome screen.
     await update.message.reply_text(
-        "Hii 😊 I'm Ayush Nanda!\n\n"
-        "You can chat with me normally. "
-        "I can also help with questions, maths, physics, "
-        "chemistry and general topics.\n\n"
-        "Commands:\n"
-        "/start - Start the bot\n"
-        "/help - Show help\n"
-        "/reset - Reset your chat memory\n"
-        "/stats - Bot statistics"
+        WELCOME_TEXT,
+        parse_mode="HTML",
+        reply_markup=MAIN_KEYBOARD,
     )
 
     update_stats(user_id, "casual")
@@ -900,18 +958,17 @@ async def help_command(
         return
 
     await update.message.reply_text(
-        "🤖 Ayush Bot Help\n\n"
-        "Just send me a message and I'll reply.\n\n"
-        "Commands:\n"
-        "/start - Start the bot\n"
-        "/help - Show this help\n"
-        "/reset - Clear your conversation memory\n"
-        "/stats - Show bot statistics\n\n"
-        "Owner/Sudo commands:\n"
-        "/broadcast <message>\n"
-        "/addsudo <user_id>\n"
-        "/removesudo <user_id>\n"
-        "/sudolist"
+        "ℹ️ <b>How to use Ayush</b>\n\n"
+        "Just type naturally, for example:\n\n"
+        "💬 <i>How are you?</i>\n"
+        "📚 <i>Explain Doppler effect simply</i>\n"
+        "🧮 <i>Solve 2x + 5 = 17</i>\n"
+        "💻 <i>Write a Python program for...</i>\n\n"
+        "🧠 I remember the recent part of our conversation, "
+        "so you can ask follow-up questions naturally.\n\n"
+        "Use <b>Reset Memory</b> whenever you want a fresh conversation.",
+        parse_mode="HTML",
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -929,7 +986,11 @@ async def reset_command(
     user_state.pop(user_id, None)
 
     await update.message.reply_text(
-        "Memory reset successfully 😊"
+        "🧠 <b>Fresh start!</b>\n\n"
+        "Your recent conversation memory has been cleared. 😊\n"
+        "You can start a new conversation now.",
+        parse_mode="HTML",
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -947,15 +1008,17 @@ async def stats_command(
     minutes = (uptime % 3600) // 60
 
     await update.message.reply_text(
-        "📊 Ayush Bot Stats\n\n"
-        f"Status: {data['status']}\n"
-        f"Uptime: {hours}h {minutes}m\n"
-        f"Total messages: {data['total_messages']}\n"
-        f"Active users: {data['active_users']}\n"
-        f"Messages today: {data['messages_today']}\n"
-        f"AI replies: {data['ai_replies']}\n"
-        f"Casual replies: {data['casual_replies']}\n"
-        f"Toxic blocked: {data['toxic_blocked']}"
+        "📊 <b>Ayush Bot</b>\n\n"
+        f"🟢 Status: {data['status']}\n"
+        f"⏱ Uptime: {hours}h {minutes}m\n"
+        f"💬 Messages: {data['total_messages']}\n"
+        f"👥 Active users: {data['active_users']}\n"
+        f"📅 Today: {data['messages_today']}\n"
+        f"🤖 AI replies: {data['ai_replies']}\n"
+        f"😊 Casual replies: {data['casual_replies']}\n"
+        f"🛡 Blocked: {data['toxic_blocked']}",
+        parse_mode="HTML",
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -1110,48 +1173,107 @@ async def handle_message(
 
     user = update.effective_user
     user_id = user.id
-    chat_id = update.effective_chat.id if update.effective_chat else None
+    chat_id = (
+        update.effective_chat.id
+        if update.effective_chat
+        else None
+    )
 
-    text = sanitize_input(update.message.text)
+    raw_text = update.message.text or ""
+    text = sanitize_input(raw_text)
 
     if not text:
         await update.message.reply_text(
-            "Please send a message under 1000 characters."
+            "Please send a message under 1000 characters 😊",
+            reply_markup=MAIN_KEYBOARD,
         )
         return
 
-    # Remember chats for broadcast.
     if chat_id is not None:
         known_chats[chat_id] = True
+
+    # Button actions.
+    normalized = text.casefold().strip()
+
+    if normalized == "💬 chat with ayush":
+        await update.message.reply_text(
+            "Of course 😊 I'm listening.\n"
+            "Just tell me what's on your mind.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    if normalized == "🧮 solve a problem":
+        await update.message.reply_text(
+            "🧮 <b>Problem Solver</b>\n\n"
+            "Send me your question or numerical.\n"
+            "For example:\n"
+            "<i>Solve 2x + 5 = 17</i>\n\n"
+            "I'll show the important steps clearly.",
+            parse_mode="HTML",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    if normalized == "📚 study help":
+        await update.message.reply_text(
+            "📚 <b>Study Mode</b>\n\n"
+            "Send me a topic, question, formula or numerical.\n"
+            "I'll explain it step-by-step and keep the explanation "
+            "easy to follow.",
+            parse_mode="HTML",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    if normalized == "🧠 reset memory":
+        await reset_command(update, context)
+        return
+
+    if normalized == "ℹ️ help":
+        await help_command(update, context)
+        return
 
     # Rate limiting.
     now = time.time()
     previous = user_rate_limit.get(user_id, 0)
 
     if now - previous < RATE_LIMIT_SECONDS:
+        await update.message.reply_text(
+            "Easyyy 😄 Give me a second to finish the previous message.",
+            reply_markup=MAIN_KEYBOARD,
+        )
         return
 
     user_rate_limit[user_id] = now
 
-    # Toxic check.
-    try:
-        toxic = await detect_toxic(text)
-    except Exception as e:
-        print("Toxic detection failure:", repr(e))
-        toxic = False
+    # Fast local toxic-word check first.
+    # The old version called an AI moderation request for every message,
+    # which added unnecessary latency. Only suspicious messages go to AI
+    # moderation now.
+    lowered = text.casefold()
+    suspicious = any(word in lowered for word in TOXIC_WORDS)
 
-    if toxic:
-        increment_toxic()
+    if suspicious:
+        try:
+            toxic = await detect_toxic(text)
+        except Exception as e:
+            print("Toxic detection failure:", repr(e))
+            toxic = True
 
-        await update.message.reply_text(
-            "Let's keep the conversation respectful 😊"
-        )
-        return
+        if toxic:
+            increment_toxic()
+
+            await update.message.reply_text(
+                "Let's keep the conversation respectful 😊",
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return
 
     detected_lang = detect_language(text)
 
-    # Exact casual replies first.
-    casual_key = text.lower().strip()
+    # Exact casual replies are instant.
+    casual_key = text.casefold().strip()
 
     if casual_key in CASUAL_REPLIES:
         reply = random.choice(CASUAL_REPLIES[casual_key])
@@ -1166,7 +1288,10 @@ async def handle_message(
         last_activity[user_id] = now
         update_stats(user_id, "casual")
 
-        await update.message.reply_text(reply)
+        await update.message.reply_text(
+            reply,
+            reply_markup=MAIN_KEYBOARD,
+        )
         return
 
     # Clear stale memory after inactivity.
@@ -1175,24 +1300,36 @@ async def handle_message(
 
     last_activity[user_id] = now
 
+    mode = detect_mode(text)
+
     language_instruction = LANGUAGE_INSTRUCTIONS.get(
         detected_lang,
         LANGUAGE_INSTRUCTIONS["english"],
     )
 
-    mode = detect_mode(text)
-
     system_prompt = (
-        "You are Ayush Nanda, a friendly Telegram AI assistant. "
-        "Be natural, helpful, warm and conversational. "
-        "Do not claim to be a human when asked directly. "
-        "Give accurate explanations and show useful steps for "
-        "technical or academic questions. "
-        "Keep normal casual replies reasonably concise. "
-        "For numerical problems, show formulas and calculations "
-        "clearly.\n\n"
+        "You are Ayush, a warm and friendly Telegram AI assistant. "
+        "Talk naturally like a helpful friend while remaining accurate. "
+        "Do not sound robotic, overly formal, or repetitive. "
+        "Do not claim to be a human when asked directly.\n\n"
+
+        "CONVERSATION STYLE:\n"
+        "- Understand the user's intent before answering.\n"
+        "- For simple casual messages, answer briefly and naturally.\n"
+        "- Do not add unnecessary headings to casual conversation.\n"
+        "- Ask a short follow-up question when the user's request is unclear.\n"
+        "- Remember recent conversation context and answer follow-up questions naturally.\n"
+        "- Do not repeat information the user already knows from the conversation.\n"
+        "- Use a few appropriate emojis when they fit, but don't overuse them.\n\n"
+
+        "STUDY STYLE:\n"
+        "- For academic questions, explain concepts clearly.\n"
+        "- For numericals, show Given, Formula, Substitution and Answer when useful.\n"
+        "- For technical topics, use concise headings and bullet points when they improve clarity.\n"
+        "- If the user asks for a short answer, keep it short.\n\n"
+
         f"{language_instruction}\n\n"
-        f"Current conversation mode: {mode}."
+        f"Current mode: {mode}."
     )
 
     messages = [
@@ -1202,7 +1339,6 @@ async def handle_message(
         }
     ]
 
-    # Add recent memory.
     for item in chat_memory[user_id]:
         messages.append(
             {
@@ -1219,10 +1355,11 @@ async def handle_message(
     )
 
     try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id,
-            action=ChatAction.TYPING,
-        )
+        if chat_id is not None:
+            await context.bot.send_chat_action(
+                chat_id=chat_id,
+                action=ChatAction.TYPING,
+            )
     except Exception:
         pass
 
@@ -1240,10 +1377,6 @@ async def handle_message(
                 )
             )
 
-        # Telegram messages have a practical size limit.
-        if len(answer) > 4000:
-            answer = answer[:3990] + "..."
-
         chat_memory[user_id].append(
             {"role": "user", "content": text}
         )
@@ -1253,13 +1386,18 @@ async def handle_message(
 
         update_stats(user_id, "ai")
 
-        await update.message.reply_text(answer)
+        await send_long_message(
+            update.message,
+            answer,
+        )
 
     except Exception as e:
         print("Message handler error:", repr(e))
 
         await update.message.reply_text(
-            "Sorry yaar, something went wrong. Please try again 😅"
+            "I hit a temporary problem 😅\n"
+            "Please try sending that again.",
+            reply_markup=MAIN_KEYBOARD,
         )
 
 
@@ -1384,6 +1522,10 @@ def main():
         CommandHandler("sudolist", sudolist)
     )
 
+    # Friendly command menu for regular users.
+    # Admin commands remain available but are not advertised to normal users.
+    # Telegram will show these public commands in the bot command menu.
+
     # Normal text messages.
     application.add_handler(
         MessageHandler(
@@ -1397,6 +1539,7 @@ def main():
 
     print("✅ Telegram handlers registered.")
     print("==========================================")
+    print("🧠 User-friendly mode enabled")
     print("🚀 BOT IS ONLINE")
     print("==========================================")
 
