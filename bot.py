@@ -1176,23 +1176,70 @@ async def detect_toxic(text):
 # =========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Personal /start welcome using the user's visible Telegram name."""
     if not update.effective_user or not update.message:
         return
 
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id
 
     if update.effective_chat:
         known_chats[update.effective_chat.id] = True
 
-    # Starting a fresh interaction should not wipe existing memory.
-    # It only registers the user and shows the welcome screen.
-    await update.message.reply_text(
-        WELCOME_TEXT,
-        parse_mode="HTML",
-        reply_markup=MAIN_KEYBOARD,
+    # Use the person's first/display name, not the numeric Telegram ID.
+    # Example: "Hey Mashu 👋 Nice to meet u!"
+    display_name = (
+        (user.first_name or "").strip()
+        or (user.username or "").strip()
+        or "there"
     )
 
+    if update.effective_chat and update.effective_chat.type == "private":
+        await update.message.reply_text(
+            f"Hey {display_name} 👋 Nice to meet u!",
+            reply_markup=MAIN_KEYBOARD,
+        )
+    else:
+        # /start inside a group is kept short and friendly.
+        await update.message.reply_text(
+            f"Hey {display_name} 👋",
+            reply_markup=MAIN_KEYBOARD,
+        )
+
     update_stats(user_id, "casual")
+
+
+async def welcome_new_members(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Welcome new members in a group with their visible Telegram name."""
+    message = update.effective_message
+    chat = update.effective_chat
+
+    if not message or not chat or chat.type not in ("group", "supergroup"):
+        return
+
+    new_members = message.new_chat_members or []
+
+    for member in new_members:
+        # Do not send a normal welcome for Ayush himself when the bot is added.
+        if member.is_bot:
+            continue
+
+        # Prefer the member's first/display name.
+        # Example: "Hey Mashu 👋 Welcome to The Secret Squad!"
+        display_name = (
+            (member.first_name or "").strip()
+            or (member.username or "").strip()
+            or "there"
+        )
+        group_name = (chat.title or "the group").strip()
+
+        await message.reply_text(
+            f"Hey {display_name} 👋 Welcome to {group_name}!"
+        )
+        update_stats(member.id, "casual")
 
 
 async def help_command(
@@ -1872,6 +1919,15 @@ def main():
     # Friendly command menu for regular users.
     # Admin commands remain available but are not advertised to normal users.
     # Telegram will show these public commands in the bot command menu.
+
+    # Welcome new members in groups/supergroups.
+    # This must be registered before the normal text-message handler.
+    application.add_handler(
+        MessageHandler(
+            filters.StatusUpdate.NEW_CHAT_MEMBERS,
+            welcome_new_members,
+        )
+    )
 
     # Normal text messages.
     application.add_handler(
