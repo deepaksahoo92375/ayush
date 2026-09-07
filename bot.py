@@ -257,6 +257,129 @@ def stats_writer_loop():
 
 
 # =========================================================
+# ERROR / DEVELOPER REPORTING
+# =========================================================
+
+USER_ERROR_REPLY = "mora tk deha bhala nahi mu pare message karuchi 🙏"
+
+
+def _safe_error_text(error):
+    """Return a diagnostic-safe error string with secrets redacted."""
+    text = str(error)
+    secrets = [
+        BOT_TOKEN,
+        GEMINI_API_KEY,
+        OPENAI_API_KEY,
+        GIST_TOKEN,
+    ]
+
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+
+    # Redact common API-key/token patterns that may appear in exception text.
+    text = re.sub(r"(?i)(api[_-]?key|token|authorization|bearer)\\s*[:=]\\s*[^\\s,;]+", r"\\1=[REDACTED]", text)
+    return text[:1500]
+
+
+def classify_error(error):
+    """Classify an exception so developer reports are easy to understand."""
+    text = _safe_error_text(error).lower()
+
+    if any(x in text for x in ("gemini", "google.genai", "generativelanguage")):
+        return "Gemini API"
+    if any(x in text for x in ("openai", "api.openai.com")):
+        return "OpenAI API"
+    if any(x in text for x in ("telegram", "telegramerror", "forbidden", "badrequest", "timedout")):
+        return "Telegram"
+    if any(x in text for x in ("timeout", "timed out", "connection", "dns", "network", "connecterror")):
+        return "Network/Timeout"
+    if any(x in text for x in ("gist", "github", "api.github.com")):
+        return "Gist/GitHub"
+    if any(x in text for x in ("memory", "database", "jsondecode", "json")):
+        return "Memory/Database"
+    if any(x in text for x in ("config", "environment", "not set", "missing")):
+        return "Configuration"
+    return "Internal Bot Issue"
+
+
+async def send_developer_message(bot, text):
+    """Send a diagnostic/startup message to the developer group."""
+    if not DEVELOPER_GROUP_ID:
+        return False
+
+    try:
+        await bot.send_message(
+            chat_id=DEVELOPER_GROUP_ID,
+            text=text[:4000],
+        )
+        return True
+    except Exception as e:
+        print("Developer group message failed:", repr(e))
+        return False
+
+
+async def send_long_message(message, text):
+    """Send long replies safely within Telegram's message-size limit."""
+    if not text:
+        return
+
+    chunk_size = 4000
+    for start_index in range(0, len(text), chunk_size):
+        await message.reply_text(text[start_index:start_index + chunk_size])
+
+
+async def report_issue(
+    bot,
+    category,
+    error,
+    update=None,
+    extra="",
+):
+    """Report a real technical failure privately to owner and developer group."""
+    error_text = _safe_error_text(error)
+    record_error(category, error_text)
+
+    user = update.effective_user if isinstance(update, Update) else None
+    chat = update.effective_chat if isinstance(update, Update) else None
+
+    user_name = get_display_name(user) if user else "Unknown"
+    user_id = user.id if user else "Unknown"
+    chat_id = chat.id if chat else "Unknown"
+    chat_type = chat.type if chat else "Unknown"
+
+    report = (
+        "🚨 AYUSH BOT ISSUE\n\n"
+        f"Category: {category}\n"
+        f"User: {user_name}\n"
+        f"User ID: {user_id}\n"
+        f"Chat ID: {chat_id}\n"
+        f"Chat type: {chat_type}\n"
+        f"Time: {datetime.now(ZoneInfo(REPORT_TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')}\n\n"
+        f"Error: {error_text}"
+    )
+
+    if extra:
+        report += f"\n\nDetails: {_safe_error_text(extra)}"
+
+    # Never let diagnostic reporting break the user's error response.
+    if OWNER_ID is not None:
+        try:
+            await bot.send_message(chat_id=OWNER_ID, text=report[:4000])
+        except Exception as e:
+            print("Owner error report failed:", repr(e))
+
+    await send_developer_message(bot, report)
+
+
+def get_display_name(user):
+    if not user:
+        return "there"
+    name = (user.first_name or "").strip()
+    return name if name else "there"
+
+
+# =========================================================
 # DEVELOPER DAILY REPORT
 # =========================================================
 
@@ -285,41 +408,32 @@ def build_daily_report():
     )
 
 
-def developer_daily_report_loop(application):
-    """
-    Sends one daily statistics report to the configured developer group.
-    Uses the server's local clock; REPORT_TIMEZONE is retained as a
-    configuration label for deployments where the host is already IST.
-    """
+async def developer_daily_report_loop(application):
+    """Send one daily statistics report using the Telegram event loop."""
     global last_daily_report_date
+    timezone = ZoneInfo(REPORT_TIMEZONE)
 
     while True:
         try:
-            now = time.localtime()
-            today = time.strftime("%Y-%m-%d", now)
+            now = datetime.now(timezone)
+            today = now.strftime("%Y-%m-%d")
 
             if (
-                now.tm_hour == DAILY_REPORT_HOUR
-                and now.tm_min == DAILY_REPORT_MINUTE
+                now.hour == DAILY_REPORT_HOUR
+                and now.minute == DAILY_REPORT_MINUTE
                 and last_daily_report_date != today
             ):
                 report = build_daily_report()
-
-                if DEVELOPER_GROUP_ID:
-                    asyncio.run(
-                        application.bot.send_message(
-                            chat_id=DEVELOPER_GROUP_ID,
-                            text=report,
-                        )
-                    )
-
+                await send_developer_message(application.bot, report)
                 last_daily_report_date = today
 
-            time.sleep(30)
+            await asyncio.sleep(20)
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             print("Daily report loop error:", repr(e))
-            time.sleep(30)
+            await asyncio.sleep(30)
 
 
 # =========================================================
@@ -1552,16 +1666,6 @@ def main():
         .post_shutdown(post_shutdown)
         .build()
     )
-
-    # Developer daily statistics reporter.
-    report_thread = threading.Thread(
-        target=developer_daily_report_loop,
-        args=(application,),
-        name="DeveloperDailyReport",
-        daemon=True,
-    )
-    report_thread.start()
-    print("✅ Developer daily report thread started.")
 
     # Commands.
     application.add_handler(
