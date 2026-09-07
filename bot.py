@@ -43,9 +43,15 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
+CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
 
 DEVELOPER_GROUP_ID = (
     int(os.getenv("DEVELOPER_GROUP_ID"))
@@ -81,8 +87,14 @@ for part in (os.getenv("SUDO_USERS") or "").split(","):
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set.")
 
-if not GEMINI_API_KEY and not OPENAI_API_KEY:
-    print("⚠️ Warning: neither GEMINI_API_KEY nor OPENAI_API_KEY is configured.")
+if not any([
+    GEMINI_API_KEY,
+    OPENAI_API_KEY,
+    GROQ_API_KEY,
+    OPENROUTER_API_KEY,
+    CEREBRAS_API_KEY,
+]):
+    print("⚠️ Warning: no AI provider API key is configured.")
 
 
 # =========================================================
@@ -98,6 +110,40 @@ gemini_client = (
 openai_client = (
     OpenAI(api_key=OPENAI_API_KEY)
     if OPENAI_API_KEY
+    else None
+)
+
+groq_client = (
+    OpenAI(
+        api_key=GROQ_API_KEY,
+        base_url="https://api.groq.com/openai/v1",
+    )
+    if GROQ_API_KEY
+    else None
+)
+
+openrouter_client = (
+    OpenAI(
+        api_key=OPENROUTER_API_KEY,
+        base_url="https://openrouter.ai/api/v1",
+        default_headers={
+            "HTTP-Referer": "https://github.com/deepaksahoo92375/ayush",
+            "X-Title": "Ayush Telegram Bot",
+        },
+    )
+    if OPENROUTER_API_KEY
+    else None
+)
+
+cerebras_client = (
+    OpenAI(
+        api_key=CEREBRAS_API_KEY,
+        base_url="https://api.cerebras.ai/v1",
+        default_headers={
+            "X-Cerebras-3rd-Party-Integration": "ayush-telegram-bot",
+        },
+    )
+    if CEREBRAS_API_KEY
     else None
 )
 
@@ -951,6 +997,69 @@ def _call_openai(messages, max_tokens=300, temperature=0.8):
 
 
 # =========================================================
+# GROQ
+# =========================================================
+
+def _call_groq(messages, max_tokens=300, temperature=0.8):
+    if not groq_client:
+        raise RuntimeError("GROQ_API_KEY not set")
+
+    response = groq_client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise RuntimeError("Empty response from Groq")
+    return text
+
+
+# =========================================================
+# OPENROUTER FREE
+# =========================================================
+
+def _call_openrouter(messages, max_tokens=300, temperature=0.8):
+    if not openrouter_client:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+
+    response = openrouter_client.chat.completions.create(
+        model=OPENROUTER_MODEL,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise RuntimeError("Empty response from OpenRouter")
+    return text
+
+
+# =========================================================
+# CEREBRAS
+# =========================================================
+
+def _call_cerebras(messages, max_tokens=300, temperature=0.8):
+    if not cerebras_client:
+        raise RuntimeError("CEREBRAS_API_KEY not set")
+
+    response = cerebras_client.chat.completions.create(
+        model=CEREBRAS_MODEL,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise RuntimeError("Empty response from Cerebras")
+    return text
+
+
+# =========================================================
 # FALLBACK
 # =========================================================
 
@@ -999,31 +1108,44 @@ class AIServiceError(RuntimeError):
 
 
 async def ask_ai(messages, detected_lang="english"):
+    """
+    Try AI providers in the exact requested order:
+
+      1. Gemini
+      2. OpenAI
+      3. Groq
+      4. OpenRouter free-model router
+      5. Cerebras
+      6. Friendly user-facing error
+
+    A provider failure is isolated; the next provider is tried automatically.
+    """
     loop = asyncio.get_running_loop()
     failures = []
 
-    if gemini_client:
-        try:
-            return await loop.run_in_executor(
-                None,
-                partial(_call_gemini, messages, 300, 0.8),
-            )
-        except Exception as e:
-            print("Gemini Error:", repr(e))
-            failures.append(("Gemini API", e))
+    providers = [
+        ("Gemini API", gemini_client, _call_gemini),
+        ("OpenAI API", openai_client, _call_openai),
+        ("Groq API", groq_client, _call_groq),
+        ("OpenRouter Free API", openrouter_client, _call_openrouter),
+        ("Cerebras API", cerebras_client, _call_cerebras),
+    ]
 
-    if openai_client:
-        try:
-            return await loop.run_in_executor(
-                None,
-                partial(_call_openai, messages, 300, 0.8),
-            )
-        except Exception as e:
-            print("OpenAI Error:", repr(e))
-            failures.append(("OpenAI API", e))
+    for name, client, function in providers:
+        if client is None:
+            failures.append((name, RuntimeError("API key not configured")))
+            continue
 
-    if not gemini_client and not openai_client:
-        failures.append(("API configuration", RuntimeError("No AI API key is configured")))
+        try:
+            result = await loop.run_in_executor(
+                None,
+                partial(function, messages, 300, 0.8),
+            )
+            print(f"✅ AI provider used: {name}")
+            return result
+        except Exception as e:
+            print(f"{name} Error:", repr(e))
+            failures.append((name, e))
 
     raise AIServiceError(failures)
 
@@ -1677,6 +1799,9 @@ def main():
 
     print(f"Gemini configured: {bool(GEMINI_API_KEY)}")
     print(f"OpenAI configured: {bool(OPENAI_API_KEY)}")
+    print(f"Groq configured: {bool(GROQ_API_KEY)}")
+    print(f"OpenRouter configured: {bool(OPENROUTER_API_KEY)}")
+    print(f"Cerebras configured: {bool(CEREBRAS_API_KEY)}")
     print(f"Owner configured: {OWNER_ID is not None}")
     print(f"Sudo users: {len(SUDO_USERS)}")
     print(f"Developer group configured: {DEVELOPER_GROUP_ID is not None}")
