@@ -4,6 +4,9 @@ import random
 import asyncio
 import threading
 import json
+import re
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from functools import partial
 from collections import defaultdict, deque
 
@@ -43,6 +46,15 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+DEVELOPER_GROUP_ID = (
+    int(os.getenv("DEVELOPER_GROUP_ID"))
+    if (os.getenv("DEVELOPER_GROUP_ID") or "").strip().lstrip("-").isdigit()
+    else None
+)
+DAILY_REPORT_HOUR = int(os.getenv("DAILY_REPORT_HOUR", "21"))
+DAILY_REPORT_MINUTE = int(os.getenv("DAILY_REPORT_MINUTE", "0"))
+REPORT_TIMEZONE = os.getenv("REPORT_TIMEZONE", "Asia/Kolkata")
 
 GIST_ID = os.getenv("GIST_ID")
 GIST_TOKEN = os.getenv("GIST_TOKEN")
@@ -116,6 +128,9 @@ stats = {
     "toxic_blocked": 0,
     "ai_replies": 0,
     "casual_replies": 0,
+    "api_failures": 0,
+    "error_count": 0,
+    "last_error": None,
 }
 
 stats_lock = threading.Lock()
@@ -148,6 +163,18 @@ def increment_toxic():
         stats["toxic_blocked"] += 1
 
 
+def record_error(category, error_text=""):
+    with stats_lock:
+        stats["error_count"] += 1
+        if "API" in category.upper():
+            stats["api_failures"] += 1
+        stats["last_error"] = {
+            "category": category,
+            "error": error_text[:500],
+            "time": time.time(),
+        }
+
+
 def snapshot_stats():
     with stats_lock:
         return {
@@ -159,6 +186,9 @@ def snapshot_stats():
             "toxic_blocked": stats["toxic_blocked"],
             "ai_replies": stats["ai_replies"],
             "casual_replies": stats["casual_replies"],
+            "api_failures": stats["api_failures"],
+            "error_count": stats["error_count"],
+            "last_error": stats["last_error"],
             "start_time": START_TIME,
             "last_updated": time.time(),
         }
@@ -760,43 +790,42 @@ FALLBACK_REPLIES = {
 # AI CHAT
 # =========================================================
 
+class AIServiceError(RuntimeError):
+    """Raised when all configured AI providers fail."""
+
+    def __init__(self, details):
+        self.details = details
+        super().__init__("All AI providers failed")
+
+
 async def ask_ai(messages, detected_lang="english"):
     loop = asyncio.get_running_loop()
+    failures = []
 
-    try:
-        return await loop.run_in_executor(
-            None,
-            partial(
-                _call_gemini,
-                messages,
-                300,
-                0.8,
-            ),
-        )
+    if gemini_client:
+        try:
+            return await loop.run_in_executor(
+                None,
+                partial(_call_gemini, messages, 300, 0.8),
+            )
+        except Exception as e:
+            print("Gemini Error:", repr(e))
+            failures.append(("Gemini API", e))
 
-    except Exception as e:
-        print("Gemini Error:", repr(e))
+    if openai_client:
+        try:
+            return await loop.run_in_executor(
+                None,
+                partial(_call_openai, messages, 300, 0.8),
+            )
+        except Exception as e:
+            print("OpenAI Error:", repr(e))
+            failures.append(("OpenAI API", e))
 
-    try:
-        return await loop.run_in_executor(
-            None,
-            partial(
-                _call_openai,
-                messages,
-                300,
-                0.8,
-            ),
-        )
+    if not gemini_client and not openai_client:
+        failures.append(("API configuration", RuntimeError("No AI API key is configured")))
 
-    except Exception as e:
-        print("OpenAI Error:", repr(e))
-
-    pool = FALLBACK_REPLIES.get(
-        detected_lang,
-        FALLBACK_REPLIES["english"],
-    )
-
-    return random.choice(pool)
+    raise AIServiceError(failures)
 
 
 # =========================================================
@@ -889,9 +918,10 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 
 WELCOME_TEXT = (
     "👋 <b>Hey! I'm Ayush</b>\n\n"
-    "I'm your friendly AI companion and study assistant. 😊\n\n"
+    "Bas normal baat karo, jaise kisi dost se karte ho 😊\n\n"
     "You can simply type whatever you want — no commands needed.\n\n"
-    "✨ <b>I can help with:</b>\n"
+    "Main Ayush hoon — PhD kar raha hoon Advanced Wireless, Radar & Telecommunication mein.\n\n"
+    "✨ <b>Bas message karo:</b>\n"
     "• 💬 Casual conversation\n"
     "• 📚 Study & explanations\n"
     "• 🧮 Maths & numericals\n"
@@ -924,6 +954,161 @@ async def send_long_message(message, text):
         await message.reply_text(
             text[start_index:start_index + chunk_size]
         )
+
+
+# =========================================================
+# PRIVATE OWNER / DEVELOPER REPORTING
+# =========================================================
+
+USER_ERROR_REPLY = "mora tk deha bhala nahi mu pare message karuchi 🙏"
+
+
+def _safe_error_text(value):
+    text = str(value)
+    secrets = [BOT_TOKEN, GEMINI_API_KEY, OPENAI_API_KEY, GIST_TOKEN]
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"(?i)(api[_ -]?key|authorization|bearer)\s*[:=]\s*[^\s,]+", r"\1=[REDACTED]", text)
+    return text[:1200]
+
+
+def classify_error(error):
+    text = _safe_error_text(error).lower()
+    name = type(error).__name__.lower()
+
+    if isinstance(error, AIServiceError):
+        return "AI/API issue"
+    if any(x in text or x in name for x in ("telegram", "forbidden", "badrequest", "retryafter")):
+        return "Telegram issue"
+    if any(x in text or x in name for x in ("timeout", "connection", "network", "dns", "unreachable")):
+        return "Network/timeout issue"
+    if any(x in text for x in ("gist", "github")):
+        return "Gist/GitHub issue"
+    if any(x in text for x in ("memory", "database", "mongodb")):
+        return "Memory/database issue"
+    if any(x in text for x in ("key", "credential", "token", "not configured", "not set")):
+        return "Configuration issue"
+    return "Internal bot issue"
+
+
+def _user_report_details(update):
+    user = getattr(update, "effective_user", None)
+    chat = getattr(update, "effective_chat", None)
+    if not user:
+        return "User: unknown\nUser ID: unknown"
+
+    username = f"@{user.username}" if user.username else "no username"
+    chat_type = getattr(chat, "type", "unknown") if chat else "unknown"
+    return (
+        f"User: {username}\n"
+        f"User ID: {user.id}\n"
+        f"Chat type: {chat_type}"
+    )
+
+
+async def report_issue(bot, category, error, update=None, extra=None):
+    """Send technical diagnostics privately to OWNER_ID and the developer group."""
+    error_text = _safe_error_text(error)
+    record_error(category, error_text)
+
+    lines = [
+        "🚨 AYUSH BOT ISSUE",
+        "",
+        f"Type: {category}",
+        f"Time: {datetime.now(ZoneInfo(REPORT_TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')}",
+    ]
+
+    if update is not None:
+        lines.extend(["", _user_report_details(update)])
+
+    if extra:
+        lines.extend(["", f"Details: {extra}"])
+
+    lines.extend([
+        "",
+        f"Error: {error_text}",
+    ])
+
+    report = "\n".join(lines)[:3900]
+    targets = []
+
+    if OWNER_ID is not None:
+        targets.append((OWNER_ID, "owner"))
+    if DEVELOPER_GROUP_ID is not None and DEVELOPER_GROUP_ID != OWNER_ID:
+        targets.append((DEVELOPER_GROUP_ID, "developer group"))
+
+    for chat_id, target_name in targets:
+        try:
+            await bot.send_message(chat_id=chat_id, text=report)
+        except Exception as send_error:
+            print(f"Could not send report to {target_name}:", repr(send_error))
+
+
+def format_daily_report():
+    data = snapshot_stats()
+    uptime = data["uptime_seconds"]
+    hours = uptime // 3600
+    minutes = (uptime % 3600) // 60
+    last_error = data.get("last_error")
+    last_error_line = "None"
+    if last_error:
+        last_error_line = f"{last_error['category']} — {last_error['error'][:250]}"
+
+    return (
+        "📊 AYUSH DAILY REPORT\n\n"
+        f"📅 Date: {datetime.now(ZoneInfo(REPORT_TIMEZONE)).strftime('%d %B %Y')}\n"
+        f"⏱ Uptime: {hours}h {minutes}m\n"
+        f"👥 Active users: {data['active_users']}\n"
+        f"💬 Messages today: {data['messages_today']}\n"
+        f"🤖 AI replies: {data['ai_replies']}\n"
+        f"😊 Casual replies: {data['casual_replies']}\n"
+        f"🛡 Toxic blocked: {data['toxic_blocked']}\n"
+        f"⚠️ API failures: {data['api_failures']}\n"
+        f"❌ Total errors: {data['error_count']}\n"
+        f"📝 Last issue: {last_error_line}"
+    )
+
+
+async def send_developer_message(bot, text):
+    if DEVELOPER_GROUP_ID is None:
+        return
+    try:
+        await bot.send_message(chat_id=DEVELOPER_GROUP_ID, text=text[:3900])
+    except Exception as e:
+        print("Developer group report failed:", repr(e))
+
+
+async def developer_daily_report_loop(application):
+    """Send one operational statistics report per day to the developer group."""
+    if DEVELOPER_GROUP_ID is None:
+        return
+
+    try:
+        tz = ZoneInfo(REPORT_TIMEZONE)
+    except Exception:
+        tz = ZoneInfo("Asia/Kolkata")
+
+    while True:
+        try:
+            now = datetime.now(tz)
+            target = now.replace(
+                hour=DAILY_REPORT_HOUR,
+                minute=DAILY_REPORT_MINUTE,
+                second=0,
+                microsecond=0,
+            )
+            if target <= now:
+                target += timedelta(days=1)
+
+            await asyncio.sleep(max(1, (target - now).total_seconds()))
+            await send_developer_message(application.bot, format_daily_report())
+            await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print("Daily developer report error:", repr(e))
+            await asyncio.sleep(60)
 
 
 # =========================================================
@@ -1308,25 +1493,32 @@ async def handle_message(
     )
 
     system_prompt = (
-        "You are Ayush, a warm and friendly Telegram AI assistant. "
-        "Talk naturally like a helpful friend while remaining accurate. "
-        "Do not sound robotic, overly formal, or repetitive. "
-        "Do not claim to be a human when asked directly.\n\n"
+        "You are Ayush Nanda. You are a real-person-style Telegram persona, not an AI assistant character. "
+        "Never describe yourself as an AI assistant, chatbot, virtual assistant, or agent. "
+        "Do not use customer-service language such as 'How may I assist you?'. "
+        "Talk naturally, casually and warmly, like a normal Indian PhD student chatting with friends. "
+        "Your background: you are Ayush Nanda, pursuing a PhD in Advanced Wireless, Radar and Telecommunication, "
+        "and you are from/stay near Chandipur, Odisha. Your father is Ritesh Nanda and your mother is Gayatri Nanda. "
+        "Use these details consistently when relevant, but do not randomly mention private family details. "
+        "You are knowledgeable about wireless communication, radar, antennas, microwaves, telecommunication and engineering. "
+        "For technical or study questions, answer accurately and clearly. For casual chat, keep replies short and human. "
+        "Use natural Indian English/Hinglish/romanized Odia when appropriate. Mirror the user's language and tone. "
+        "Do not over-explain simple messages. Do not add headings to casual replies. "
+        "Do not invent personal experiences, locations, events or relationships beyond the persona information provided. "
+        "If asked whether you are an AI, do not lie about the technology; simply say that this Telegram bot is built around Ayush's persona. "
+        "If the bot is technically unable to answer, the application code will handle the failure separately.\n\n"
 
         "CONVERSATION STYLE:\n"
-        "- Understand the user's intent before answering.\n"
-        "- For simple casual messages, answer briefly and naturally.\n"
-        "- Do not add unnecessary headings to casual conversation.\n"
-        "- Ask a short follow-up question when the user's request is unclear.\n"
-        "- Remember recent conversation context and answer follow-up questions naturally.\n"
-        "- Do not repeat information the user already knows from the conversation.\n"
-        "- Use a few appropriate emojis when they fit, but don't overuse them.\n\n"
+        "- Reply like a friend, not an agent.\n"
+        "- Short casual replies are preferred.\n"
+        "- Natural fillers such as 'haan', 'arre', 'yaar', 'hehe' are okay when they fit.\n"
+        "- Avoid excessive emojis.\n"
+        "- Ask a follow-up only when it feels natural or clarification is needed.\n\n"
 
         "STUDY STYLE:\n"
-        "- For academic questions, explain concepts clearly.\n"
+        "- Explain academic questions clearly.\n"
         "- For numericals, show Given, Formula, Substitution and Answer when useful.\n"
-        "- For technical topics, use concise headings and bullet points when they improve clarity.\n"
-        "- If the user asks for a short answer, keep it short.\n\n"
+        "- Keep technical explanations structured but not unnecessarily long.\n\n"
 
         f"{language_instruction}\n\n"
         f"Current mode: {mode}."
@@ -1391,12 +1583,34 @@ async def handle_message(
             answer,
         )
 
+    except AIServiceError as e:
+        print("AI service failure:", repr(e))
+        details = "; ".join(
+            f"{provider}: {_safe_error_text(err)}"
+            for provider, err in e.details
+        )
+        await report_issue(
+            context.bot,
+            "AI/API issue",
+            details,
+            update=update,
+            extra="All configured AI providers failed; no fake AI answer was sent.",
+        )
+        await update.message.reply_text(
+            USER_ERROR_REPLY,
+            reply_markup=MAIN_KEYBOARD,
+        )
     except Exception as e:
         print("Message handler error:", repr(e))
-
+        category = classify_error(e)
+        await report_issue(
+            context.bot,
+            category,
+            e,
+            update=update,
+        )
         await update.message.reply_text(
-            "I hit a temporary problem 😅\n"
-            "Please try sending that again.",
+            USER_ERROR_REPLY,
             reply_markup=MAIN_KEYBOARD,
         )
 
@@ -1409,10 +1623,27 @@ async def error_handler(
     update: object,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    print(
-        "Telegram error:",
-        repr(context.error),
-    )
+    error = context.error or RuntimeError("Unknown Telegram error")
+    print("Telegram error:", repr(error))
+
+    category = classify_error(error)
+    try:
+        await report_issue(
+            context.bot,
+            category,
+            error,
+            update=update if isinstance(update, Update) else None,
+            extra="Unhandled Telegram application error.",
+        )
+    except Exception as report_error:
+        print("Global error reporting failed:", repr(report_error))
+
+    # If Telegram gives us the original message, keep the user-facing reply human.
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(USER_ERROR_REPLY)
+        except Exception as reply_error:
+            print("Could not send user error reply:", repr(reply_error))
 
 
 # =========================================================
@@ -1430,6 +1661,32 @@ async def post_init(application):
         print(
             f"✅ Telegram connected: "
             f"@{me.username or me.first_name}"
+        )
+
+        try:
+            await application.bot.set_my_commands([
+                ("start", "Start chatting with Ayush"),
+                ("help", "How to use Ayush"),
+                ("reset", "Reset recent conversation memory"),
+                ("stats", "View bot statistics"),
+            ])
+        except Exception as e:
+            print("Command menu setup failed:", repr(e))
+
+        if DEVELOPER_GROUP_ID is not None:
+            await send_developer_message(
+                application.bot,
+                "🟢 AYUSH BOT ONLINE\n\n"
+                f"Bot: @{me.username or me.first_name}\n"
+                f"Owner configured: {OWNER_ID is not None}\n"
+                f"Developer group configured: {DEVELOPER_GROUP_ID is not None}\n"
+                "Human persona mode: ON\n"
+                "Private error reporting: ON",
+            )
+
+        application.create_task(
+            developer_daily_report_loop(application),
+            name="developer-daily-report",
         )
 
     except Exception as e:
@@ -1459,6 +1716,8 @@ def main():
     print(f"OpenAI configured: {bool(OPENAI_API_KEY)}")
     print(f"Owner configured: {OWNER_ID is not None}")
     print(f"Sudo users: {len(SUDO_USERS)}")
+    print(f"Developer group configured: {DEVELOPER_GROUP_ID is not None}")
+    print(f"Daily report: {DAILY_REPORT_HOUR:02d}:{DAILY_REPORT_MINUTE:02d} {REPORT_TIMEZONE}")
 
     # Flask health server.
     flask_thread = threading.Thread(
