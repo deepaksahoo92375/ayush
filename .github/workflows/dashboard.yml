@@ -279,15 +279,13 @@ jobs:
           echo "STARTING TAILSCALE FUNNEL"
           echo "=========================================="
 
-          echo ""
-          echo "If Funnel has not yet been enabled for"
-          echo "your tailnet, Tailscale will provide the"
-          echo "authorization URL below."
-          echo ""
+          sudo tailscale funnel reset || true
 
-          sudo tailscale funnel --bg 8000
+          sudo tailscale funnel --https=443 --bg 8000
 
-          sleep 5
+          echo ""
+          echo "Waiting for Funnel configuration..."
+          sleep 10
 
           echo ""
           echo "=========================================="
@@ -367,7 +365,6 @@ jobs:
           TAILSCALE_DNS_NAME="$(sudo tailscale status --json | python -c '
           import json
           import sys
-
           data = json.load(sys.stdin)
           self_node = data.get("Self", {})
           print(self_node.get("DNSName", ""))
@@ -375,27 +372,84 @@ jobs:
 
           TAILSCALE_DNS_NAME="${TAILSCALE_DNS_NAME%.}"
 
-          echo "Testing:"
-          echo "https://$TAILSCALE_DNS_NAME"
-
-          sleep 5
-
-          HTTP_CODE="$(curl \
-            --silent \
-            --show-error \
-            --output /dev/null \
-            --write-out "%{http_code}" \
-            --max-time 20 \
-            "https://$TAILSCALE_DNS_NAME/")"
-
-          echo "HTTP status: $HTTP_CODE"
-
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::Public dashboard returned HTTP $HTTP_CODE"
+          if [ -z "$TAILSCALE_DNS_NAME" ]; then
+            echo "::error::Could not determine public hostname."
             exit 1
           fi
 
-          echo "Public dashboard is reachable."
+          URL="https://${TAILSCALE_DNS_NAME}/"
+
+          echo ""
+          echo "=========================================="
+          echo "TESTING PUBLIC DASHBOARD"
+          echo "=========================================="
+          echo ""
+          echo "URL:"
+          echo "$URL"
+          echo ""
+
+          echo "Waiting for public DNS/TLS to become ready..."
+          echo "This can take several minutes for a new Funnel node."
+          echo ""
+
+          SUCCESS=0
+
+          for i in {1..60}; do
+            echo "Attempt $i/60..."
+
+            HTTP_CODE="$(curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --connect-timeout 10 \
+              --max-time 20 \
+              "$URL" 2>/tmp/funnel-curl-error.txt || true)"
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo ""
+              echo "=========================================="
+              echo "PUBLIC DASHBOARD IS READY"
+              echo "=========================================="
+              echo ""
+              echo "HTTP status: $HTTP_CODE"
+              echo "URL: $URL"
+              SUCCESS=1
+              break
+            fi
+
+            echo "HTTP status: ${HTTP_CODE:-curl-failed}"
+
+            if [ -s /tmp/funnel-curl-error.txt ]; then
+              echo "curl:"
+              cat /tmp/funnel-curl-error.txt
+            fi
+
+            echo ""
+            echo "Funnel status:"
+            sudo tailscale funnel status || true
+
+            echo ""
+            echo "Waiting 10 seconds..."
+            sleep 10
+            echo ""
+          done
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo ""
+            echo "::error::Public dashboard did not become reachable."
+            echo ""
+            echo "Final Funnel status:"
+            sudo tailscale funnel status || true
+            echo ""
+            echo "Tailscale status:"
+            sudo tailscale status || true
+            echo ""
+            echo "DNS:"
+            getent hosts "$TAILSCALE_DNS_NAME" || true
+            echo ""
+            exit 1
+          fi
 
 
       # ==========================================================
