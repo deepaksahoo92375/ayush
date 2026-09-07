@@ -17,7 +17,7 @@ from openai import OpenAI
 from flask import Flask, jsonify
 from flask_cors import CORS
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
@@ -310,17 +310,6 @@ USER_ERROR_REPLY = "mora tk deha bhala nahi mu pare message karuchi 🙏"
 
 
 # Friendly keyboard shown to regular users.
-MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        [KeyboardButton("💬 Chat with Ayush"), KeyboardButton("🧮 Solve a problem")],
-        [KeyboardButton("📚 Study help"), KeyboardButton("🧠 Reset memory")],
-        [KeyboardButton("ℹ️ Help")],
-    ],
-    resize_keyboard=True,
-    is_persistent=True,
-)
-
-
 def _safe_error_text(error):
     """Return a diagnostic-safe error string with secrets redacted."""
     text = str(error)
@@ -1197,13 +1186,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat and update.effective_chat.type == "private":
         await update.message.reply_text(
             f"Hey {display_name} 👋 Nice to meet u!",
-            reply_markup=MAIN_KEYBOARD,
         )
     else:
         # /start inside a group is kept short and friendly.
         await update.message.reply_text(
             f"Hey {display_name} 👋",
-            reply_markup=MAIN_KEYBOARD,
         )
 
     update_stats(user_id, "casual")
@@ -1260,7 +1247,6 @@ async def help_command(
         "so you can ask follow-up questions naturally.\n\n"
         "Use <b>Reset Memory</b> whenever you want a fresh conversation.",
         parse_mode="HTML",
-        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -1282,7 +1268,6 @@ async def reset_command(
         "Your recent conversation memory has been cleared. 😊\n"
         "You can start a new conversation now.",
         parse_mode="HTML",
-        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -1310,7 +1295,6 @@ async def stats_command(
         f"😊 Casual replies: {data['casual_replies']}\n"
         f"🛡 Blocked: {data['toxic_blocked']}",
         parse_mode="HTML",
-        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -1477,7 +1461,6 @@ async def handle_message(
     if not text:
         await update.message.reply_text(
             "Please send a message under 1000 characters 😊",
-            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -1491,7 +1474,6 @@ async def handle_message(
         await update.message.reply_text(
             "Of course 😊 I'm listening.\n"
             "Just tell me what's on your mind.",
-            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -1503,7 +1485,6 @@ async def handle_message(
             "<i>Solve 2x + 5 = 17</i>\n\n"
             "I'll show the important steps clearly.",
             parse_mode="HTML",
-            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -1514,7 +1495,6 @@ async def handle_message(
             "I'll explain it step-by-step and keep the explanation "
             "easy to follow.",
             parse_mode="HTML",
-            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -1533,7 +1513,6 @@ async def handle_message(
     if now - previous < RATE_LIMIT_SECONDS:
         await update.message.reply_text(
             "Easyyy 😄 Give me a second to finish the previous message.",
-            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -1558,8 +1537,7 @@ async def handle_message(
 
             await update.message.reply_text(
                 "Let's keep the conversation respectful 😊",
-                reply_markup=MAIN_KEYBOARD,
-            )
+                )
             return
 
     detected_lang = detect_language(text)
@@ -1582,7 +1560,6 @@ async def handle_message(
 
         await update.message.reply_text(
             reply,
-            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -1705,7 +1682,6 @@ async def handle_message(
         )
         await update.message.reply_text(
             USER_ERROR_REPLY,
-            reply_markup=MAIN_KEYBOARD,
         )
     except Exception as e:
         print("Message handler error:", repr(e))
@@ -1718,7 +1694,6 @@ async def handle_message(
         )
         await update.message.reply_text(
             USER_ERROR_REPLY,
-            reply_markup=MAIN_KEYBOARD,
         )
 
 
