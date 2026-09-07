@@ -1,0 +1,376 @@
+name: Ayush Dashboard Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ayush-dashboard
+  cancel-in-progress: true
+
+jobs:
+  dashboard:
+    name: Run Ayush Dashboard
+    runs-on: ubuntu-latest
+
+    # GitHub-hosted runner maximum is 6 hours.
+    timeout-minutes: 330
+
+    steps:
+
+      # =====================================================
+      # CHECKOUT
+      # =====================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # =====================================================
+      # PYTHON
+      # =====================================================
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # =====================================================
+      # VERIFY DASHBOARD FILES
+      # =====================================================
+      - name: Verify dashboard files
+        run: |
+          echo "=========================================="
+          echo "CHECKING AYUSH DASHBOARD"
+          echo "=========================================="
+
+          test -f dashboard/dashboard.py || {
+            echo "❌ dashboard/dashboard.py not found"
+            exit 1
+          }
+
+          test -f dashboard/requirements.txt || {
+            echo "❌ dashboard/requirements.txt not found"
+            exit 1
+          }
+
+          test -f dashboard/templates/index.html || {
+            echo "❌ dashboard/templates/index.html not found"
+            exit 1
+          }
+
+          test -f dashboard/templates/admin.html || {
+            echo "❌ dashboard/templates/admin.html not found"
+            exit 1
+          }
+
+          test -f dashboard/static/site.css || {
+            echo "❌ dashboard/static/site.css not found"
+            exit 1
+          }
+
+          echo "✅ dashboard.py found"
+          echo "✅ requirements.txt found"
+          echo "✅ index.html found"
+          echo "✅ admin.html found"
+          echo "✅ site.css found"
+
+      # =====================================================
+      # INSTALL DEPENDENCIES
+      # =====================================================
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # =====================================================
+      # SYNTAX CHECK
+      # =====================================================
+      - name: Check dashboard syntax
+        working-directory: dashboard
+        run: |
+          echo "Running Python syntax check..."
+          python -m py_compile dashboard.py
+          echo "✅ dashboard.py syntax is valid"
+
+      # =====================================================
+      # VERIFY REQUIRED SECRETS
+      # =====================================================
+      - name: Verify dashboard secrets
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+
+          TELEGRAM_CLIENT_ID: ${{ secrets.TELEGRAM_CLIENT_ID }}
+          TELEGRAM_CLIENT_SECRET: ${{ secrets.TELEGRAM_CLIENT_SECRET }}
+
+        run: |
+          echo "=========================================="
+          echo "CHECKING DASHBOARD SECRETS"
+          echo "=========================================="
+
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "❌ BOT_TOKEN is missing"
+            exit 1
+          fi
+          echo "✅ BOT_TOKEN present"
+
+          if [ -z "$OWNER_ID" ]; then
+            echo "❌ OWNER_ID is missing"
+            exit 1
+          fi
+          echo "✅ OWNER_ID present"
+
+          if [ -z "$GIST_ID" ]; then
+            echo "❌ GIST_ID is missing"
+            exit 1
+          fi
+          echo "✅ GIST_ID present"
+
+          if [ -z "$GIST_TOKEN" ]; then
+            echo "❌ GIST_TOKEN is missing"
+            exit 1
+          fi
+          echo "✅ GIST_TOKEN present"
+
+          if [ -z "$TELEGRAM_CLIENT_ID" ]; then
+            echo "❌ TELEGRAM_CLIENT_ID is missing"
+            exit 1
+          fi
+          echo "✅ TELEGRAM_CLIENT_ID present"
+
+          if [ -z "$TELEGRAM_CLIENT_SECRET" ]; then
+            echo "❌ TELEGRAM_CLIENT_SECRET is missing"
+            exit 1
+          fi
+          echo "✅ TELEGRAM_CLIENT_SECRET present"
+
+          echo ""
+          echo "✅ Required dashboard secrets are present"
+
+      # =====================================================
+      # INSTALL CLOUDFLARED
+      # =====================================================
+      - name: Install Cloudflare Tunnel
+        run: |
+          echo "Installing cloudflared..."
+
+          curl -L \
+            --fail \
+            --silent \
+            --show-error \
+            -o cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+
+          chmod +x cloudflared
+
+          ./cloudflared --version
+
+      # =====================================================
+      # START CLOUDFLARE QUICK TUNNEL
+      # =====================================================
+      - name: Start public dashboard tunnel
+        working-directory: dashboard
+        run: |
+          echo "Starting Cloudflare Quick Tunnel..."
+
+          ../cloudflared tunnel \
+            --no-autoupdate \
+            --url http://127.0.0.1:8000 \
+            > ../cloudflared.log 2>&1 &
+
+          echo $! > ../cloudflared.pid
+
+          echo "Waiting for public URL..."
+
+          for i in {1..30}; do
+
+            if grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' ../cloudflared.log | head -n 1 > ../tunnel_url.txt; then
+
+              if [ -s ../tunnel_url.txt ]; then
+                break
+              fi
+
+            fi
+
+            sleep 2
+          done
+
+          if [ ! -s ../tunnel_url.txt ]; then
+            echo "❌ Cloudflare tunnel URL was not created"
+            echo ""
+            cat ../cloudflared.log
+            exit 1
+          fi
+
+          PUBLIC_BASE_URL=$(cat ../tunnel_url.txt)
+
+          echo ""
+          echo "=========================================="
+          echo "🌐 PUBLIC DASHBOARD URL"
+          echo "=========================================="
+          echo "$PUBLIC_BASE_URL"
+          echo ""
+          echo "Dashboard:"
+          echo "$PUBLIC_BASE_URL/"
+          echo ""
+          echo "Admin:"
+          echo "$PUBLIC_BASE_URL/login"
+          echo ""
+          echo "OIDC callback:"
+          echo "$PUBLIC_BASE_URL/auth/callback"
+          echo "=========================================="
+
+          echo "PUBLIC_BASE_URL=$PUBLIC_BASE_URL" >> "$GITHUB_ENV"
+
+      # =====================================================
+      # START FASTAPI DASHBOARD
+      # =====================================================
+      - name: Start Ayush Dashboard
+        working-directory: dashboard
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+
+          TELEGRAM_CLIENT_ID: ${{ secrets.TELEGRAM_CLIENT_ID }}
+          TELEGRAM_CLIENT_SECRET: ${{ secrets.TELEGRAM_CLIENT_SECRET }}
+
+          GIST_FILENAME: "ayush_stats.json"
+          ACCESS_FILENAME: "ayush_access.json"
+
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          COOKIE_SECURE: "true"
+
+        run: |
+          echo "=========================================="
+          echo "🌐 AYUSH DASHBOARD STARTING"
+          echo "=========================================="
+
+          echo ""
+          echo "Public URL:"
+          echo "$PUBLIC_BASE_URL"
+
+          echo ""
+          echo "Starting FastAPI..."
+
+          nohup python -u -m uvicorn dashboard:app \
+            --host 0.0.0.0 \
+            --port 8000 \
+            > ../dashboard.log 2>&1 &
+
+          echo $! > ../dashboard.pid
+
+          echo ""
+          echo "Waiting for dashboard..."
+
+          for i in {1..30}; do
+
+            if curl \
+              --silent \
+              --fail \
+              http://127.0.0.1:8000/ \
+              > /dev/null; then
+
+              echo "✅ Dashboard is responding"
+              break
+
+            fi
+
+            sleep 2
+
+          done
+
+          if ! curl \
+            --silent \
+            --fail \
+            http://127.0.0.1:8000/ \
+            > /dev/null; then
+
+            echo "❌ Dashboard failed to start"
+            echo ""
+            cat ../dashboard.log
+            exit 1
+          fi
+
+          echo ""
+          echo "=========================================="
+          echo "🚀 AYUSH DASHBOARD IS LIVE"
+          echo "=========================================="
+          echo ""
+          echo "PUBLIC URL:"
+          echo "$PUBLIC_BASE_URL"
+          echo ""
+          echo "LOGIN URL:"
+          echo "$PUBLIC_BASE_URL/login"
+          echo ""
+          echo "CALLBACK URL:"
+          echo "$PUBLIC_BASE_URL/auth/callback"
+          echo ""
+          echo "=========================================="
+
+      # =====================================================
+      # KEEP DASHBOARD ALIVE
+      # =====================================================
+      - name: Keep dashboard running
+        run: |
+          echo "=========================================="
+          echo "AYUSH DASHBOARD TEST SERVER"
+          echo "=========================================="
+
+          echo ""
+          echo "Dashboard URL:"
+          echo "$PUBLIC_BASE_URL"
+
+          echo ""
+          echo "Admin URL:"
+          echo "$PUBLIC_BASE_URL/login"
+
+          echo ""
+          echo "The dashboard will remain available while"
+          echo "this GitHub Actions job is running."
+          echo ""
+
+          echo "Pressing Stop/Cancel on this workflow will"
+          echo "terminate the dashboard and tunnel."
+
+          echo ""
+          echo "=========================================="
+          echo "LIVE LOGS"
+          echo "=========================================="
+
+          while true; do
+
+            echo ""
+            echo "----- $(date -u '+%Y-%m-%d %H:%M:%S UTC') -----"
+
+            if [ -f dashboard.log ]; then
+              tail -n 20 dashboard.log
+            fi
+
+            sleep 30
+
+          done
+
+      # =====================================================
+      # CLEANUP
+      # =====================================================
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Stopping dashboard..."
+
+          if [ -f dashboard.pid ]; then
+            kill "$(cat dashboard.pid)" 2>/dev/null || true
+          fi
+
+          if [ -f cloudflared.pid ]; then
+            kill "$(cat cloudflared.pid)" 2>/dev/null || true
+          fi
+
+          echo "Cleanup complete."
