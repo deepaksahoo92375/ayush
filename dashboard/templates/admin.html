@@ -1,150 +1,1443 @@
-
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ayush AI — Admin Dashboard</title>
-<link rel="stylesheet" href="/static/site.css">
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Ayush Admin Dashboard</title>
+
+    <link rel="stylesheet" href="/static/site.css">
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body class="admin-body">
 
-<nav class="nav wrap">
-  <a class="brand" href="/"><span class="brand-mark">A</span><span>Ayush AI</span></a>
-  <div class="admin-user">
-    {% if user.picture %}<img src="{{ user.picture }}" alt="">{% endif %}
-    <span>{{ user.name }}</span>
-    <a href="/logout">Logout</a>
-  </div>
-</nav>
+<body class="dashboard-page">
 
-<main class="wrap dashboard">
-<div class="dash-head">
-  <div><div class="eyebrow">SECURE ADMIN AREA</div><h1>Command Center</h1><p>Private analytics and operational visibility.</p></div>
-  <div class="secure-pill">🔒 Authenticated</div>
-</div>
+    <!-- Animated wallpaper -->
+    <div class="wallpaper"></div>
+    <div class="wallpaper-overlay"></div>
 
-<section class="metric-grid">
-  <div class="metric"><span>Bot status</span><strong class="green">● Live</strong></div>
-  <div class="metric"><span>Total messages</span><strong>{{ stats.get('total_messages', 0) }}</strong></div>
-  <div class="metric"><span>Active users</span><strong>{{ stats.get('active_users', 0) }}</strong></div>
-  <div class="metric"><span>Groups</span><strong>{{ stats.get('group_count', stats.get('groups_count', 0)) }}</strong></div>
-  <div class="metric"><span>AI replies</span><strong>{{ stats.get('ai_replies', 0) }}</strong></div>
-  <div class="metric"><span>Errors</span><strong>{{ stats.get('error_count', stats.get('errors', 0)) }}</strong></div>
-  <div class="metric"><span>Total tokens</span><strong>{{ "{:,}".format(stats.get('total_tokens', 0)) }}</strong></div>
-  <div class="metric"><span>Last update</span><strong>{{ stats.get('last_updated', '') }}</strong></div>
-</section>
+    <main class="dashboard-container">
 
-<section class="panel">
-  <div class="panel-head"><div><h2>Activity</h2><p>Private bot activity telemetry.</p></div></div>
-  <div class="chart-box"><canvas id="activityChart"></canvas></div>
-</section>
+        <!-- HEADER -->
+        <header class="dashboard-header glass">
 
-<section class="two-col">
-<div class="panel">
-  <div class="panel-head"><div><h2>AI providers</h2><p>Provider calls from telemetry.</p></div></div>
-  {% set providers = stats.get('provider_calls', {}) %}
-  {% for name, value in providers.items() %}
-  <div class="provider-row">
-    <span>{{ name }}</span><div class="bar"><i style="width:{{ [value * 4, 100] | min }}%"></i></div><b>{{ value }}</b>
-  </div>
-  {% endfor %}
-  {% if not providers %}<div class="empty">Provider telemetry will appear here when the bot emits it.</div>{% endif %}
-  <div class="usage-summary">
-    <div><span>Input</span><b>{{ "{:,}".format(stats.get('prompt_tokens', 0)) }}</b></div>
-    <div><span>Output</span><b>{{ "{:,}".format(stats.get('completion_tokens', 0)) }}</b></div>
-    <div><span>Total</span><b>{{ "{:,}".format(stats.get('total_tokens', 0)) }}</b></div>
-  </div>
-</div>
+            <div>
+                <div class="eyebrow">AYUSH AI</div>
+                <h1>Admin Dashboard</h1>
+                <p class="subtitle">
+                    Live monitoring and system statistics
+                </p>
+            </div>
 
-<div class="panel">
-  <div class="panel-head"><div><h2>Groups</h2><p>Visible only to authenticated admins.</p></div></div>
-  {% for group in stats.get('groups', []) %}
-  <div class="list-row">
-    <div><b>{{ group.get('title', group.get('name', 'Group')) }}</b><small>{{ group.get('id', '') }}</small></div>
-    <strong>{{ group.get('messages', 0) }}</strong>
-  </div>
-  {% endfor %}
-  {% if not stats.get('groups') %}<div class="empty">Group telemetry will appear when the bot records group metadata.</div>{% endif %}
-</div>
-</section>
+            <div class="header-actions">
+                <span id="connectionStatus" class="status-pill">
+                    ● Checking...
+                </span>
 
-<section class="panel">
-  <div class="panel-head"><div><h2>Users</h2><p>Private user activity. Only authenticated admins can view this.</p></div></div>
-  <div class="table-wrap">
-  <table><thead><tr><th>User</th><th>Telegram ID</th><th>Messages</th><th>Last active</th></tr></thead><tbody>
-  {% for u in stats.get('users', []) %}
-  <tr><td>{{ u.get('name', u.get('username', 'Unknown')) }}</td><td>{{ u.get('id', '') }}</td><td>{{ u.get('messages', 0) }}</td><td>{{ u.get('last_active', '') }}</td></tr>
-  {% endfor %}
-  </tbody></table>
-  </div>
-  {% if not stats.get('users') %}<div class="empty">User activity will appear when the bot emits user telemetry.</div>{% endif %}
-</section>
+                <a href="/" class="glass-button">
+                    Home
+                </a>
 
-<section class="panel">
-  <div class="panel-head"><div><h2>Last 1-hour logs</h2><p>Only recent operational logs are shown here.</p></div></div>
-  <div class="logs">
-  {% for log in stats.get('logs', []) %}
-    <div class="log-line"><span>{{ log.get('time','') }}</span><b>{{ log.get('level','INFO') }}</b><p>{{ log.get('message','') }}</p></div>
-  {% endfor %}
-  {% if not stats.get('logs') %}<div class="empty">No recent logs are present in the current telemetry yet.</div>{% endif %}
-  </div>
-</section>
+                <a href="/logout" class="glass-button danger-button">
+                    Logout
+                </a>
+            </div>
 
-{% if is_owner %}
-<section class="panel" id="security">
-  <div class="panel-head">
-    <div><h2>Sudo management</h2><p>Owner-only. Add or remove dashboard administrators by numeric Telegram ID.</p></div>
-    <span class="owner-badge">OWNER</span>
-  </div>
+        </header>
 
-  <form class="sudo-form" method="post" action="/api/sudo/add">
-    <input name="telegram_id" inputmode="numeric" pattern="[0-9]+" placeholder="Telegram User ID" required>
-    <button class="btn primary" type="submit">+ Add Sudo</button>
-  </form>
 
-  <div class="sudo-list">
-  {% for sid in access.get('sudo_ids', []) %}
-    <div class="sudo-row">
-      <span>👤 {{ sid }}</span>
-      <form method="post" action="/api/sudo/remove">
-        <input type="hidden" name="telegram_id" value="{{ sid }}">
-        <button class="danger" type="submit">Remove</button>
-      </form>
-    </div>
-  {% endfor %}
-  {% if not access.get('sudo_ids') %}<div class="empty">No sudo members configured.</div>{% endif %}
-  </div>
-</section>
-{% endif %}
-</main>
+        <!-- TOP METRICS -->
+        <section class="metrics-grid">
+
+            <div class="metric-card glass">
+                <span class="metric-label">Total Messages</span>
+                <strong id="totalMessages">0</strong>
+                <small>All time</small>
+            </div>
+
+            <div class="metric-card glass">
+                <span class="metric-label">Active Users</span>
+                <strong id="activeUsers">0</strong>
+                <small>Tracked users</small>
+            </div>
+
+            <div class="metric-card glass">
+                <span class="metric-label">Messages Today</span>
+                <strong id="messagesToday">0</strong>
+                <small>Current day</small>
+            </div>
+
+            <div class="metric-card glass">
+                <span class="metric-label">AI Replies</span>
+                <strong id="aiReplies">0</strong>
+                <small>Generated responses</small>
+            </div>
+
+            <div class="metric-card glass">
+                <span class="metric-label">API Failures</span>
+                <strong id="apiFailures">0</strong>
+                <small>Provider failures</small>
+            </div>
+
+            <div class="metric-card glass">
+                <span class="metric-label">Total Tokens</span>
+                <strong id="totalTokens">0</strong>
+                <small>Input + output</small>
+            </div>
+
+        </section>
+
+
+        <!-- MAIN ACTIVITY GRAPH -->
+        <section class="glass chart-card main-chart-card">
+
+            <div class="section-heading">
+                <div>
+                    <span class="eyebrow">REAL-TIME ACTIVITY</span>
+                    <h2>Messages & AI Activity</h2>
+                    <p>
+                        Recent bot activity over time
+                    </p>
+                </div>
+
+                <div class="chart-indicator">
+                    <span class="live-dot"></span>
+                    Live
+                </div>
+            </div>
+
+            <div class="chart-wrapper large-chart">
+                <canvas id="activityChart"></canvas>
+            </div>
+
+        </section>
+
+
+        <!-- TWO COLUMN CHART AREA -->
+        <section class="two-column">
+
+            <!-- PROVIDERS -->
+            <div class="glass chart-card">
+
+                <div class="section-heading">
+                    <div>
+                        <span class="eyebrow">AI PROVIDERS</span>
+                        <h2>Provider Usage</h2>
+                        <p>
+                            Calls made to each AI provider
+                        </p>
+                    </div>
+                </div>
+
+                <div class="chart-wrapper">
+                    <canvas id="providerChart"></canvas>
+                </div>
+
+            </div>
+
+
+            <!-- TOKENS -->
+            <div class="glass chart-card">
+
+                <div class="section-heading">
+                    <div>
+                        <span class="eyebrow">TOKEN USAGE</span>
+                        <h2>Token Statistics</h2>
+                        <p>
+                            Input, output and total tokens
+                        </p>
+                    </div>
+                </div>
+
+                <div class="token-summary">
+
+                    <div>
+                        <span>Input</span>
+                        <strong id="inputTokens">0</strong>
+                    </div>
+
+                    <div>
+                        <span>Output</span>
+                        <strong id="outputTokens">0</strong>
+                    </div>
+
+                    <div>
+                        <span>Total</span>
+                        <strong id="summaryTotalTokens">0</strong>
+                    </div>
+
+                </div>
+
+                <div class="chart-wrapper">
+                    <canvas id="tokenChart"></canvas>
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- GROUPS + USERS -->
+        <section class="two-column">
+
+            <!-- GROUPS -->
+            <div class="glass table-card">
+
+                <div class="section-heading">
+                    <div>
+                        <span class="eyebrow">TELEGRAM</span>
+                        <h2>Groups</h2>
+                    </div>
+                </div>
+
+                <div class="table-container">
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Group</th>
+                                <th>Messages</th>
+                                <th>Last Active</th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="groupsTable">
+                            <tr>
+                                <td colspan="3" class="empty">
+                                    Loading...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                </div>
+
+            </div>
+
+
+            <!-- USERS -->
+            <div class="glass table-card">
+
+                <div class="section-heading">
+                    <div>
+                        <span class="eyebrow">USERS</span>
+                        <h2>Active Users</h2>
+                    </div>
+                </div>
+
+                <div class="table-container">
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Messages</th>
+                                <th>Last Active</th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="usersTable">
+                            <tr>
+                                <td colspan="3" class="empty">
+                                    Loading...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- PROVIDER DETAILS -->
+        <section class="glass table-card">
+
+            <div class="section-heading">
+
+                <div>
+                    <span class="eyebrow">AI SYSTEM</span>
+                    <h2>Provider Statistics</h2>
+                    <p>
+                        Detailed provider calls and token usage
+                    </p>
+                </div>
+
+            </div>
+
+            <div class="table-container">
+
+                <table>
+
+                    <thead>
+                        <tr>
+                            <th>Provider</th>
+                            <th>Calls</th>
+                            <th>Input Tokens</th>
+                            <th>Output Tokens</th>
+                            <th>Total Tokens</th>
+                        </tr>
+                    </thead>
+
+                    <tbody id="providerTable">
+
+                        <tr>
+                            <td colspan="5" class="empty">
+                                Loading...
+                            </td>
+                        </tr>
+
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        </section>
+
+
+        <!-- LOGS -->
+        <section class="glass logs-card">
+
+            <div class="section-heading">
+
+                <div>
+                    <span class="eyebrow">SYSTEM LOG</span>
+                    <h2>Recent Activity</h2>
+                    <p>
+                        Latest operational events
+                    </p>
+                </div>
+
+                <span id="lastUpdated">
+                    Last update: —
+                </span>
+
+            </div>
+
+            <div id="logsContainer" class="logs-container">
+
+                <div class="log-item">
+                    <span class="log-time">—</span>
+                    <span class="log-message">
+                        Loading system logs...
+                    </span>
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- OWNER SUDO MANAGEMENT -->
+        <section id="sudoSection" class="glass table-card hidden">
+
+            <div class="section-heading">
+
+                <div>
+                    <span class="eyebrow">OWNER CONTROL</span>
+                    <h2>Sudo Management</h2>
+                    <p>
+                        Manage authorized dashboard users
+                    </p>
+                </div>
+
+            </div>
+
+            <div class="sudo-form">
+
+                <input
+                    type="number"
+                    id="sudoId"
+                    placeholder="Telegram numeric ID"
+                >
+
+                <button onclick="addSudo()" class="primary-button">
+                    Add Sudo
+                </button>
+
+            </div>
+
+            <div class="table-container">
+
+                <table>
+
+                    <thead>
+                        <tr>
+                            <th>Telegram ID</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+
+                    <tbody id="sudoTable">
+                        <tr>
+                            <td colspan="2" class="empty">
+                                Loading...
+                            </td>
+                        </tr>
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        </section>
+
+    </main>
+
 
 <script>
-const stats = {{ stats | tojson }};
-const activity = Array.isArray(stats.activity) ? stats.activity : [];
-const labels = activity.map(x => x.label || x.time || '');
-const values = activity.map(x => Number(x.messages || x.count || 0));
 
-new Chart(document.getElementById('activityChart'), {
-  type: 'line',
-  data: {
-    labels,
-    datasets: [{
-      label: 'Messages',
-      data: values,
-      tension: .35,
-      borderWidth: 2,
-      pointRadius: 2
-    }]
-  },
-  options: {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: { legend: { display: false } },
-    scales: { x: { grid: { display: false } }, y: { beginAtZero: true } }
-  }
-});
+let activityChart;
+let providerChart;
+let tokenChart;
+
+
+/* -------------------------------------------------
+   CHART DEFAULTS
+------------------------------------------------- */
+
+Chart.defaults.font.family =
+    "Inter, Segoe UI, Arial, sans-serif";
+
+Chart.defaults.color =
+    "rgba(255,255,255,0.72)";
+
+Chart.defaults.borderColor =
+    "rgba(255,255,255,0.08)";
+
+
+/* -------------------------------------------------
+   CREATE ACTIVITY CHART
+------------------------------------------------- */
+
+function createActivityChart(labels, messages, aiReplies) {
+
+    const ctx =
+        document.getElementById("activityChart");
+
+    if (activityChart)
+        activityChart.destroy();
+
+    activityChart = new Chart(ctx, {
+
+        type: "line",
+
+        data: {
+
+            labels: labels,
+
+            datasets: [
+
+                {
+                    label: "Messages",
+                    data: messages,
+
+                    tension: 0.4,
+
+                    fill: true,
+
+                    borderWidth: 2,
+
+                    pointRadius: 2,
+
+                    pointHoverRadius: 5
+                },
+
+                {
+                    label: "AI Replies",
+                    data: aiReplies,
+
+                    tension: 0.4,
+
+                    fill: true,
+
+                    borderWidth: 2,
+
+                    pointRadius: 2,
+
+                    pointHoverRadius: 5
+                }
+
+            ]
+        },
+
+        options: {
+
+            responsive: true,
+
+            maintainAspectRatio: false,
+
+            interaction: {
+                intersect: false,
+                mode: "index"
+            },
+
+            plugins: {
+
+                legend: {
+                    position: "top",
+                    align: "end"
+                },
+
+                tooltip: {
+                    enabled: true
+                }
+
+            },
+
+            scales: {
+
+                x: {
+                    grid: {
+                        display: false
+                    }
+                },
+
+                y: {
+                    beginAtZero: true,
+
+                    grid: {
+                        color:
+                            "rgba(255,255,255,0.07)"
+                    }
+                }
+
+            }
+        }
+
+    });
+}
+
+
+/* -------------------------------------------------
+   PROVIDER CHART
+------------------------------------------------- */
+
+function createProviderChart(labels, values) {
+
+    const ctx =
+        document.getElementById("providerChart");
+
+    if (providerChart)
+        providerChart.destroy();
+
+    providerChart = new Chart(ctx, {
+
+        type: "doughnut",
+
+        data: {
+
+            labels: labels,
+
+            datasets: [{
+
+                data: values,
+
+                borderWidth: 0
+            }]
+        },
+
+        options: {
+
+            responsive: true,
+
+            maintainAspectRatio: false,
+
+            cutout: "70%",
+
+            plugins: {
+
+                legend: {
+                    position: "bottom"
+                }
+
+            }
+        }
+
+    });
+}
+
+
+/* -------------------------------------------------
+   TOKEN CHART
+------------------------------------------------- */
+
+function createTokenChart(input, output) {
+
+    const ctx =
+        document.getElementById("tokenChart");
+
+    if (tokenChart)
+        tokenChart.destroy();
+
+    tokenChart = new Chart(ctx, {
+
+        type: "bar",
+
+        data: {
+
+            labels: [
+                "Input",
+                "Output"
+            ],
+
+            datasets: [{
+
+                label: "Tokens",
+
+                data: [
+                    input,
+                    output
+                ],
+
+                borderRadius: 8,
+
+                borderWidth: 0
+            }]
+
+        },
+
+        options: {
+
+            responsive: true,
+
+            maintainAspectRatio: false,
+
+            plugins: {
+
+                legend: {
+                    display: false
+                }
+
+            },
+
+            scales: {
+
+                x: {
+                    grid: {
+                        display: false
+                    }
+                },
+
+                y: {
+                    beginAtZero: true
+                }
+
+            }
+
+        }
+
+    });
+}
+
+
+/* -------------------------------------------------
+   HELPERS
+------------------------------------------------- */
+
+function number(value) {
+
+    return Number(value || 0)
+        .toLocaleString();
+}
+
+
+function safe(value) {
+
+    if (value === null ||
+        value === undefined ||
+        value === "") {
+
+        return "—";
+    }
+
+    return String(value);
+}
+
+
+/* -------------------------------------------------
+   LOAD DASHBOARD
+------------------------------------------------- */
+
+async function loadDashboard() {
+
+    try {
+
+        const response =
+            await fetch("/api/dashboard", {
+                credentials: "include"
+            });
+
+        if (!response.ok)
+            throw new Error("Dashboard API failed");
+
+        const data =
+            await response.json();
+
+
+        /* STATUS */
+
+        document.getElementById(
+            "connectionStatus"
+        ).textContent = "● Bot Online";
+
+
+        /* METRICS */
+
+        const stats =
+            data.stats || data;
+
+        document.getElementById(
+            "totalMessages"
+        ).textContent =
+            number(stats.total_messages);
+
+
+        document.getElementById(
+            "activeUsers"
+        ).textContent =
+            number(
+                stats.active_users ??
+                Object.keys(stats.users || {}).length
+            );
+
+
+        document.getElementById(
+            "messagesToday"
+        ).textContent =
+            number(stats.messages_today);
+
+
+        document.getElementById(
+            "aiReplies"
+        ).textContent =
+            number(stats.ai_replies);
+
+
+        document.getElementById(
+            "apiFailures"
+        ).textContent =
+            number(stats.api_failures);
+
+
+        const tokens =
+            stats.tokens || {};
+
+
+        const inputTokens =
+            Number(
+                tokens.input ??
+                stats.input_tokens ??
+                0
+            );
+
+
+        const outputTokens =
+            Number(
+                tokens.output ??
+                stats.output_tokens ??
+                0
+            );
+
+
+        const totalTokens =
+            Number(
+                tokens.total ??
+                stats.total_tokens ??
+                inputTokens + outputTokens
+            );
+
+
+        document.getElementById(
+            "totalTokens"
+        ).textContent =
+            number(totalTokens);
+
+
+        document.getElementById(
+            "inputTokens"
+        ).textContent =
+            number(inputTokens);
+
+
+        document.getElementById(
+            "outputTokens"
+        ).textContent =
+            number(outputTokens);
+
+
+        document.getElementById(
+            "summaryTotalTokens"
+        ).textContent =
+            number(totalTokens);
+
+
+        /* ACTIVITY */
+
+        const activity =
+            stats.activity ||
+            stats.activity_buckets ||
+            [];
+
+
+        let labels = [];
+        let messages = [];
+        let aiReplies = [];
+
+
+        if (Array.isArray(activity)) {
+
+            activity.forEach(item => {
+
+                labels.push(
+                    item.label ||
+                    item.time ||
+                    item.minute ||
+                    ""
+                );
+
+                messages.push(
+                    Number(item.messages || 0)
+                );
+
+                aiReplies.push(
+                    Number(item.ai_replies || 0)
+                );
+
+            });
+
+        }
+        else {
+
+            Object.entries(activity)
+                .forEach(([key, item]) => {
+
+                    labels.push(key);
+
+                    if (typeof item === "object") {
+
+                        messages.push(
+                            Number(item.messages || 0)
+                        );
+
+                        aiReplies.push(
+                            Number(item.ai_replies || 0)
+                        );
+
+                    }
+                    else {
+
+                        messages.push(
+                            Number(item || 0)
+                        );
+
+                        aiReplies.push(0);
+                    }
+
+                });
+        }
+
+
+        createActivityChart(
+            labels,
+            messages,
+            aiReplies
+        );
+
+
+        /* PROVIDERS */
+
+        const providers =
+            stats.provider_calls ||
+            stats.providers ||
+            {};
+
+
+        const providerLabels =
+            Object.keys(providers);
+
+
+        const providerValues =
+            providerLabels.map(name => {
+
+                const item =
+                    providers[name];
+
+                if (typeof item === "object")
+                    return Number(
+                        item.calls || 0
+                    );
+
+                return Number(item || 0);
+
+            });
+
+
+        createProviderChart(
+            providerLabels,
+            providerValues
+        );
+
+
+        /* TOKEN CHART */
+
+        createTokenChart(
+            inputTokens,
+            outputTokens
+        );
+
+
+        /* GROUPS */
+
+        renderGroups(
+            stats.groups || {}
+        );
+
+
+        /* USERS */
+
+        renderUsers(
+            stats.users || {}
+        );
+
+
+        /* PROVIDER TABLE */
+
+        renderProviders(
+            providers,
+            stats.provider_tokens || {}
+        );
+
+
+        /* LOGS */
+
+        renderLogs(
+            stats.logs ||
+            stats.recent_logs ||
+            stats.last_hour_logs ||
+            []
+        );
+
+
+        /* LAST UPDATE */
+
+        document.getElementById(
+            "lastUpdated"
+        ).textContent =
+            "Last update: " +
+            new Date().toLocaleTimeString();
+
+
+        /* SUDO */
+
+        if (
+            data.is_owner === true ||
+            data.role === "owner"
+        ) {
+
+            document.getElementById(
+                "sudoSection"
+            ).classList.remove("hidden");
+
+            renderSudo(
+                data.sudo_users ||
+                data.sudo_ids ||
+                []
+            );
+
+        }
+
+    }
+    catch (error) {
+
+        console.error(error);
+
+        document.getElementById(
+            "connectionStatus"
+        ).textContent =
+            "● Connection Error";
+    }
+}
+
+
+/* -------------------------------------------------
+   GROUP TABLE
+------------------------------------------------- */
+
+function renderGroups(groups) {
+
+    const tbody =
+        document.getElementById("groupsTable");
+
+    const entries =
+        Array.isArray(groups)
+            ? groups.map(x => [x.id, x])
+            : Object.entries(groups);
+
+
+    if (!entries.length) {
+
+        tbody.innerHTML =
+            `<tr>
+                <td colspan="3" class="empty">
+                    No group activity yet
+                </td>
+            </tr>`;
+
+        return;
+    }
+
+
+    tbody.innerHTML =
+        entries
+        .slice(0, 10)
+        .map(([id, group]) => {
+
+            if (typeof group !== "object")
+                group = {
+                    messages: group
+                };
+
+
+            return `
+                <tr>
+
+                    <td>
+                        ${safe(
+                            group.title ||
+                            group.name ||
+                            id
+                        )}
+                    </td>
+
+                    <td>
+                        ${number(
+                            group.messages
+                        )}
+                    </td>
+
+                    <td>
+                        ${safe(
+                            group.last_active
+                        )}
+                    </td>
+
+                </tr>
+            `;
+
+        })
+        .join("");
+}
+
+
+/* -------------------------------------------------
+   USER TABLE
+------------------------------------------------- */
+
+function renderUsers(users) {
+
+    const tbody =
+        document.getElementById("usersTable");
+
+    const entries =
+        Array.isArray(users)
+            ? users.map(x => [x.id, x])
+            : Object.entries(users);
+
+
+    if (!entries.length) {
+
+        tbody.innerHTML =
+            `<tr>
+                <td colspan="3" class="empty">
+                    No users tracked yet
+                </td>
+            </tr>`;
+
+        return;
+    }
+
+
+    tbody.innerHTML =
+        entries
+        .slice(0, 15)
+        .map(([id, user]) => {
+
+            if (typeof user !== "object")
+                user = {
+                    messages: user
+                };
+
+
+            const username =
+                user.username
+                    ? "@" + user.username
+                    : "";
+
+
+            return `
+                <tr>
+
+                    <td>
+                        <strong>
+                            ${safe(
+                                user.name ||
+                                user.first_name ||
+                                id
+                            )}
+                        </strong>
+
+                        <small class="table-sub">
+                            ${username}
+                        </small>
+                    </td>
+
+                    <td>
+                        ${number(
+                            user.messages
+                        )}
+                    </td>
+
+                    <td>
+                        ${safe(
+                            user.last_active
+                        )}
+                    </td>
+
+                </tr>
+            `;
+
+        })
+        .join("");
+}
+
+
+/* -------------------------------------------------
+   PROVIDER TABLE
+------------------------------------------------- */
+
+function renderProviders(
+    providers,
+    providerTokens
+) {
+
+    const tbody =
+        document.getElementById(
+            "providerTable"
+        );
+
+
+    const names =
+        Object.keys(providers);
+
+
+    if (!names.length) {
+
+        tbody.innerHTML =
+            `<tr>
+                <td colspan="5" class="empty">
+                    No provider calls yet
+                </td>
+            </tr>`;
+
+        return;
+    }
+
+
+    tbody.innerHTML =
+        names.map(name => {
+
+            const item =
+                typeof providers[name] === "object"
+                    ? providers[name]
+                    : {
+                        calls: providers[name]
+                    };
+
+
+            const token =
+                providerTokens[name] || {};
+
+
+            const input =
+                Number(
+                    item.input_tokens ??
+                    token.input ??
+                    0
+                );
+
+
+            const output =
+                Number(
+                    item.output_tokens ??
+                    token.output ??
+                    0
+                );
+
+
+            const total =
+                Number(
+                    item.total_tokens ??
+                    token.total ??
+                    input + output
+                );
+
+
+            return `
+                <tr>
+
+                    <td>
+                        <strong>
+                            ${safe(name)}
+                        </strong>
+                    </td>
+
+                    <td>
+                        ${number(
+                            item.calls || 0
+                        )}
+                    </td>
+
+                    <td>
+                        ${number(input)}
+                    </td>
+
+                    <td>
+                        ${number(output)}
+                    </td>
+
+                    <td>
+                        ${number(total)}
+                    </td>
+
+                </tr>
+            `;
+
+        }).join("");
+}
+
+
+/* -------------------------------------------------
+   LOGS
+------------------------------------------------- */
+
+function renderLogs(logs) {
+
+    const container =
+        document.getElementById(
+            "logsContainer"
+        );
+
+
+    if (!Array.isArray(logs) ||
+        !logs.length) {
+
+        container.innerHTML =
+            `<div class="log-item">
+                <span class="log-message">
+                    No recent events
+                </span>
+            </div>`;
+
+        return;
+    }
+
+
+    container.innerHTML =
+        logs.slice(-30).reverse()
+        .map(log => {
+
+            if (typeof log === "string") {
+
+                return `
+                    <div class="log-item">
+                        <span class="log-message">
+                            ${safe(log)}
+                        </span>
+                    </div>
+                `;
+            }
+
+
+            return `
+                <div class="log-item">
+
+                    <span class="log-time">
+                        ${safe(
+                            log.time ||
+                            log.timestamp ||
+                            log.created_at
+                        )}
+                    </span>
+
+                    <span class="log-message">
+                        ${safe(
+                            log.message ||
+                            log.event ||
+                            log.type
+                        )}
+                    </span>
+
+                </div>
+            `;
+
+        })
+        .join("");
+}
+
+
+/* -------------------------------------------------
+   SUDO
+------------------------------------------------- */
+
+function renderSudo(ids) {
+
+    const tbody =
+        document.getElementById(
+            "sudoTable"
+        );
+
+
+    if (!Array.isArray(ids) ||
+        !ids.length) {
+
+        tbody.innerHTML =
+            `<tr>
+                <td colspan="2" class="empty">
+                    No sudo users
+                </td>
+            </tr>`;
+
+        return;
+    }
+
+
+    tbody.innerHTML =
+        ids.map(id => {
+
+            return `
+                <tr>
+
+                    <td>
+                        ${safe(id)}
+                    </td>
+
+                    <td>
+
+                        <button
+                            class="danger-small"
+                            onclick="removeSudo('${id}')">
+
+                            Remove
+
+                        </button>
+
+                    </td>
+
+                </tr>
+            `;
+
+        }).join("");
+}
+
+
+/* -------------------------------------------------
+   ADD SUDO
+------------------------------------------------- */
+
+async function addSudo() {
+
+    const input =
+        document.getElementById(
+            "sudoId"
+        );
+
+    const id =
+        input.value.trim();
+
+
+    if (!id)
+        return;
+
+
+    await fetch(
+        "/api/sudo/add",
+        {
+
+            method: "POST",
+
+            headers: {
+                "Content-Type":
+                    "application/json"
+            },
+
+            credentials: "include",
+
+            body: JSON.stringify({
+                user_id: Number(id)
+            })
+        }
+    );
+
+
+    input.value = "";
+
+    loadDashboard();
+}
+
+
+/* -------------------------------------------------
+   REMOVE SUDO
+------------------------------------------------- */
+
+async function removeSudo(id) {
+
+    if (!confirm(
+        "Remove this sudo user?"
+    ))
+        return;
+
+
+    await fetch(
+        "/api/sudo/remove",
+        {
+
+            method: "POST",
+
+            headers: {
+                "Content-Type":
+                    "application/json"
+            },
+
+            credentials: "include",
+
+            body: JSON.stringify({
+                user_id: Number(id)
+            })
+        }
+    );
+
+
+    loadDashboard();
+}
+
+
+/* -------------------------------------------------
+   LIVE REFRESH
+------------------------------------------------- */
+
+loadDashboard();
+
+setInterval(
+    loadDashboard,
+    30000
+);
+
 </script>
+
 </body>
 </html>
