@@ -5,6 +5,9 @@ import asyncio
 import threading
 import json
 import re
+import hashlib
+import secrets
+import hmac
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from functools import partial
@@ -62,6 +65,12 @@ DAILY_REPORT_HOUR = int(os.getenv("DAILY_REPORT_HOUR", "21"))
 DAILY_REPORT_MINUTE = int(os.getenv("DAILY_REPORT_MINUTE", "0"))
 REPORT_TIMEZONE = os.getenv("REPORT_TIMEZONE", "Asia/Kolkata")
 
+# GitHub Actions jobs have a finite runtime. The workflow currently gives
+# this bot about 5.5 hours, so warn the developer group before the runner
+# reaches its normal task limit.
+TASK_WARNING_MINUTES = int(os.getenv("TASK_WARNING_MINUTES", "10"))
+TASK_WARNING_AFTER_MINUTES = int(os.getenv("TASK_WARNING_AFTER_MINUTES", "320"))
+
 GIST_ID = os.getenv("GIST_ID")
 GIST_TOKEN = os.getenv("GIST_TOKEN")
 GIST_FILENAME = os.getenv("GIST_FILENAME", "ayush_stats.json")
@@ -73,6 +82,11 @@ OWNER_ID = (
 )
 
 SUDO_USERS = set()
+
+# Dashboard sudo credentials are stored as salted PBKDF2 hashes.
+# Format:
+#   SUDO_AUTH_<numeric_user_id> = <salt>$<hash>
+# The owner can create/update these credentials through /addsudoauth.
 
 for part in (os.getenv("SUDO_USERS") or "").split(","):
     part = part.strip()
@@ -160,6 +174,77 @@ def is_sudo(user_id):
     return is_owner(user_id) or user_id in SUDO_USERS
 
 
+def _sudo_auth_env_key(user_id):
+    return f"SUDO_AUTH_{int(user_id)}"
+
+
+def hash_sudo_password(password, salt=None):
+    """Return a salted PBKDF2-HMAC-SHA256 password record."""
+    if not password:
+        raise ValueError("Password cannot be empty.")
+
+    salt_bytes = salt or secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt_bytes,
+        310_000,
+    )
+    return (
+        salt_bytes.hex()
+        + "$"
+        + digest.hex()
+    )
+
+
+def verify_sudo_password(password, stored_record):
+    """Constant-time verification of a stored sudo password record."""
+    try:
+        salt_hex, digest_hex = stored_record.split("$", 1)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+    except (ValueError, TypeError):
+        return False
+
+    actual = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        310_000,
+    )
+    return hmac.compare_digest(actual, expected)
+
+
+def get_sudo_auth_record(user_id):
+    return (os.getenv(_sudo_auth_env_key(user_id)) or "").strip()
+
+
+def list_sudo_auth_ids():
+    """Find configured dashboard sudo IDs from environment variables."""
+    prefix = "SUDO_AUTH_"
+    ids = []
+
+    for key in os.environ:
+        if not key.startswith(prefix):
+            continue
+        value = key[len(prefix):]
+        if value.isdigit():
+            ids.append(int(value))
+
+    return sorted(set(ids))
+
+
+def build_invalid_credentials_report(user_id, username, ip_text="unknown"):
+    return (
+        "🚨 DASHBOARD LOGIN FAILURE\n\n"
+        f"User ID: {user_id}\n"
+        f"Username: @{username if username else 'none'}\n"
+        f"Source: {ip_text}\n"
+        f"Time: {datetime.now(ZoneInfo(REPORT_TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+        "Reason: Invalid dashboard credentials."
+    )
+
+
 # =========================================================
 # STATS
 # =========================================================
@@ -177,6 +262,16 @@ stats = {
     "api_failures": 0,
     "error_count": 0,
     "last_error": None,
+    "provider_calls": {
+        "Gemini": 0,
+        "OpenAI": 0,
+        "Groq": 0,
+        "OpenRouter": 0,
+        "Cerebras": 0,
+    },
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
 }
 
 stats_lock = threading.Lock()
@@ -221,6 +316,53 @@ def record_error(category, error_text=""):
         }
 
 
+
+def record_ai_usage(provider_name, response):
+    """Record provider calls and token usage when the API exposes usage data."""
+    provider_key = {
+        "Gemini API": "Gemini",
+        "OpenAI API": "OpenAI",
+        "Groq API": "Groq",
+        "OpenRouter Free API": "OpenRouter",
+        "Cerebras API": "Cerebras",
+    }.get(provider_name, provider_name)
+
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        usage = getattr(response, "usage_metadata", None)
+
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+
+    if usage is not None:
+        prompt_tokens = int(
+            getattr(usage, "prompt_tokens", None)
+            or getattr(usage, "input_tokens", None)
+            or getattr(usage, "prompt_token_count", None)
+            or 0
+        )
+        completion_tokens = int(
+            getattr(usage, "completion_tokens", None)
+            or getattr(usage, "output_tokens", None)
+            or getattr(usage, "candidates_token_count", None)
+            or 0
+        )
+        total_tokens = int(
+            getattr(usage, "total_tokens", None)
+            or getattr(usage, "total_token_count", None)
+            or (prompt_tokens + completion_tokens)
+        )
+
+    with stats_lock:
+        if provider_key not in stats["provider_calls"]:
+            stats["provider_calls"][provider_key] = 0
+        stats["provider_calls"][provider_key] += 1
+        stats["prompt_tokens"] += prompt_tokens
+        stats["completion_tokens"] += completion_tokens
+        stats["total_tokens"] += total_tokens
+
+
 def snapshot_stats():
     with stats_lock:
         return {
@@ -235,6 +377,10 @@ def snapshot_stats():
             "api_failures": stats["api_failures"],
             "error_count": stats["error_count"],
             "last_error": stats["last_error"],
+            "provider_calls": dict(stats["provider_calls"]),
+            "prompt_tokens": stats["prompt_tokens"],
+            "completion_tokens": stats["completion_tokens"],
+            "total_tokens": stats["total_tokens"],
             "start_time": START_TIME,
             "last_updated": time.time(),
         }
@@ -683,34 +829,51 @@ def detect_language(text):
 LANGUAGE_INSTRUCTIONS = {
     "odia_script": (
         "The user is writing in Odia. "
-        "ALWAYS reply in natural romanized Odia using English letters only. "
+        "ALWAYS reply in natural romanized Odia using Latin/English letters only. "
         "NEVER output Odia Unicode script. "
-        "Do not transliterate romanized Odia back into Odia Unicode. "
-        "Keep names and spellings natural; for example, write 'Nanda' as 'Nanda', "
-        "not 'ନଣ୍ଡା' or any other Odia-script form."
+        "Do not transliterate names or words into Odia script. "
+        "For example, 'Nanda' must remain 'Nanda', never 'ନନ୍ଦ' or 'ନଣ୍ଡା'."
     ),
     "romanized_odia": (
         "The user is writing in Odia. "
-        "ALWAYS reply in natural romanized Odia using English letters only. "
+        "ALWAYS reply in natural romanized Odia using Latin/English letters only. "
         "NEVER output Odia Unicode script. "
-        "Do not translate or transliterate romanized Odia into Odia Unicode. "
-        "Use natural spellings such as 'nanda', 'bhala', 'kemiti', 'mu', 'tame'. "
-        "Keep proper names exactly in Latin letters, e.g. 'Nanda' remains 'Nanda'. "
-        "Do not switch to Hindi or formal English."
+        "Do not translate or transliterate romanized Odia into another script. "
+        "Keep names exactly in Latin letters, for example 'Nanda' remains 'Nanda'."
     ),
     "hindi_script": (
-        "The user is writing in Hindi Devanagari. "
-        "Reply entirely in Hindi Devanagari. "
-        "Do not switch to English."
+        "The user is writing in Hindi. "
+        "ALWAYS reply in natural romanized Hindi using Latin/English letters only. "
+        "NEVER output Devanagari or any other native Hindi script."
     ),
     "romanized_hindi": (
-        "The user is writing in romanized Hindi. "
-        "Reply in romanized Hindi using English letters."
+        "The user is writing in Hindi. "
+        "Reply in natural romanized Hindi using Latin/English letters only. "
+        "NEVER switch to Devanagari."
     ),
     "english": (
-        "The user is writing in English. Reply in English."
+        "The user is writing in English. Reply in English unless they clearly use "
+        "another regional language."
     ),
 }
+
+
+# =========================================================
+# REGIONAL LANGUAGE OUTPUT RULE
+# =========================================================
+
+REGIONAL_LANGUAGE_OUTPUT_RULE = (
+    "REGIONAL LANGUAGE RULE: If the user writes or speaks in any Indian/regional "
+    "language (Odia, Hindi, Bengali, Assamese, Marathi, Gujarati, Punjabi, Tamil, "
+    "Telugu, Kannada, Malayalam, Urdu, etc.), respond in that same language but "
+    "ONLY in Romanized Latin/English letters. NEVER output the native Unicode "
+    "script of a regional language. This rule applies even if the user writes "
+    "the language in its native script. Preserve proper names naturally in Latin "
+    "letters. Do not convert a name such as 'Nanda' into an incorrect regional "
+    "script spelling. You may infer the language from the user's message; use "
+    "language detection when useful, but do not make a separate API request just "
+    "for detection if the language is already clear."
+)
 
 
 # =========================================================
@@ -752,32 +915,32 @@ CASUAL_REPLIES = {
         "Ayush Nanda hehe 😄",
     ],
     "where are you from": [
-        "I'm from Baleswar, Odisha 😊 Beautiful place hehe 🌸",
-        "Baleswar, Odisha is my hometown 😄",
+        "I'm from Chandipur, Balasore, Odisha 😊 Beautiful place hehe 🌸",
+        "I belong to Chandipur, Balasore, Odisha 😄",
     ],
     "where do you live": [
-        "Currently in Calcutta for my PhD 😊",
-        "Living in Calcutta these days hehe 😄",
+        "Currently I stay in Calcutta with my parents for my PhD 😊",
+        "I'm staying in Calcutta with my parents these days hehe 😄",
     ],
     "what do you study": [
-        "I'm doing PhD at Calcutta University in Advanced Radar Communication 😊",
-        "Advanced Radar Communication at Calcutta University 🌸 PhD life is tough but fun!",
+        "I'm doing my PhD at Calcutta University in Advanced Radar and Wireless Communication and Integrated VLSI Circuit Design 😊",
+        "Researching Advanced Radar, Wireless Communication and Integrated VLSI Circuit Design at Calcutta University 🌸 PhD life is tough but fun!",
     ],
     "tell me about yourself": [
-        "I'm Ayush Nanda from Baleswar, Odisha 😊 Currently doing PhD at Calcutta University in Advanced Radar Communication hehe 🌸",
-        "Ayush Nanda here! From Baleswar, PhD student at Calcutta University 😄",
+        "I'm Ayush Nanda from Chandipur, Balasore, Odisha 😊 Currently pursuing my PhD at Calcutta University hehe 🌸",
+        "Ayush Nanda here! I belong to Chandipur, Balasore, Odisha, and now stay in Calcutta with my parents 😄",
     ],
     "who is your father": [
-        "My father is Ritesh Nanda 😊 He is a researcher and scientist at C-DOT Calcutta 🌸",
-        "Papa is Ritesh Nanda, researcher cum scientist at C-DOT Calcutta hehe 😄",
+        "My father is a scientist at C-DOT Kolkata 😊",
+        "Papa is a scientist at C-DOT Kolkata hehe 😄",
     ],
     "who is your mother": [
-        "My mother is Gayatri Nanda 😊 She is wonderful 🌸",
-        "Mama is Gayatri Nanda hehe 😄",
+        "My mother is Gayatri Nanda 😊 She is a housewife 🌸",
+        "Mama is Gayatri Nanda, she is a housewife hehe 😄",
     ],
     "tell me about your family": [
-        "My father Ritesh Nanda is a researcher and scientist at C-DOT Calcutta 😊 My mother is Gayatri Nanda 🌸",
-        "Papa Ritesh Nanda works at C-DOT Calcutta as a scientist 😄 And mama Gayatri Nanda is the best!",
+        "My father is a scientist at C-DOT Kolkata 😊 My mother is Gayatri Nanda and she is a housewife 🌸",
+        "Papa is a scientist at C-DOT Kolkata 😄 And mama Gayatri Nanda is a housewife!",
     ],
     "kaise ho": [
         "Main mast hu 😊 Tum batao?",
@@ -968,6 +1131,7 @@ def _call_gemini(messages, max_tokens=300, temperature=0.8):
     if not text:
         raise RuntimeError("Empty response from Gemini")
 
+    record_ai_usage("Gemini API", response)
     return text
 
 
@@ -993,6 +1157,7 @@ def _call_openai(messages, max_tokens=300, temperature=0.8):
     if not text:
         raise RuntimeError("Empty response from OpenAI")
 
+    record_ai_usage("OpenAI API", response)
     return text
 
 
@@ -1014,6 +1179,7 @@ def _call_groq(messages, max_tokens=300, temperature=0.8):
     text = (response.choices[0].message.content or "").strip()
     if not text:
         raise RuntimeError("Empty response from Groq")
+    record_ai_usage("Groq API", response)
     return text
 
 
@@ -1035,6 +1201,7 @@ def _call_openrouter(messages, max_tokens=300, temperature=0.8):
     text = (response.choices[0].message.content or "").strip()
     if not text:
         raise RuntimeError("Empty response from OpenRouter")
+    record_ai_usage("OpenRouter Free API", response)
     return text
 
 
@@ -1056,6 +1223,7 @@ def _call_cerebras(messages, max_tokens=300, temperature=0.8):
     text = (response.choices[0].message.content or "").strip()
     if not text:
         raise RuntimeError("Empty response from Cerebras")
+    record_ai_usage("Cerebras API", response)
     return text
 
 
@@ -1286,25 +1454,66 @@ async def stats_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    if not update.message:
+    """Developer-only detailed live statistics command.
+
+    /stat and /stats work only inside the configured developer group.
+    """
+    if not update.message or not update.effective_chat:
+        return
+
+    chat = update.effective_chat
+
+    if DEVELOPER_GROUP_ID is None or chat.id != DEVELOPER_GROUP_ID:
+        # Silently ignore the command everywhere else.
         return
 
     data = snapshot_stats()
 
     uptime = data["uptime_seconds"]
-    hours = uptime // 3600
+    days = uptime // 86400
+    hours = (uptime % 86400) // 3600
     minutes = (uptime % 3600) // 60
 
+    providers = data["provider_calls"]
+    configured = [
+        name for name, enabled in [
+            ("Gemini", bool(GEMINI_API_KEY)),
+            ("OpenAI", bool(OPENAI_API_KEY)),
+            ("Groq", bool(GROQ_API_KEY)),
+            ("OpenRouter", bool(OPENROUTER_API_KEY)),
+            ("Cerebras", bool(CEREBRAS_API_KEY)),
+        ] if enabled
+    ]
+
+    if days:
+        uptime_text = f"{days}d {hours}h {minutes}m"
+    else:
+        uptime_text = f"{hours}h {minutes}m"
+
     await update.message.reply_text(
-        "📊 <b>Ayush Bot</b>\n\n"
+        "📊 <b>AYUSH BOT — DEVELOPER STATS</b>\n\n"
         f"🟢 Status: {data['status']}\n"
-        f"⏱ Uptime: {hours}h {minutes}m\n"
-        f"💬 Messages: {data['total_messages']}\n"
+        f"⏱ Uptime: {uptime_text}\n"
+        f"💬 Total messages: {data['total_messages']}\n"
+        f"📅 Messages today: {data['messages_today']}\n"
         f"👥 Active users: {data['active_users']}\n"
-        f"📅 Today: {data['messages_today']}\n"
         f"🤖 AI replies: {data['ai_replies']}\n"
         f"😊 Casual replies: {data['casual_replies']}\n"
-        f"🛡 Blocked: {data['toxic_blocked']}",
+        f"🛡 Toxic blocked: {data['toxic_blocked']}\n"
+        f"⚠️ API failures: {data['api_failures']}\n"
+        f"❌ Errors: {data['error_count']}\n\n"
+        "🧠 <b>AI USAGE</b>\n"
+        f"🔹 Gemini calls: {providers.get('Gemini', 0)}\n"
+        f"🔹 OpenAI calls: {providers.get('OpenAI', 0)}\n"
+        f"🔹 Groq calls: {providers.get('Groq', 0)}\n"
+        f"🔹 OpenRouter calls: {providers.get('OpenRouter', 0)}\n"
+        f"🔹 Cerebras calls: {providers.get('Cerebras', 0)}\n"
+        f"🎟 Input tokens: {data['prompt_tokens']:,}\n"
+        f"🎟 Output tokens: {data['completion_tokens']:,}\n"
+        f"🎟 Total tokens: {data['total_tokens']:,}\n\n"
+        "🔑 <b>CONFIGURED AI</b>\n"
+        f"{', '.join(configured) if configured else 'None'}\n\n"
+        f"🕐 Started: {datetime.fromtimestamp(data['start_time'], ZoneInfo(REPORT_TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')}",
         parse_mode="HTML",
     )
 
@@ -1357,6 +1566,58 @@ async def broadcast(
         "📢 Broadcast completed.\n\n"
         f"Sent: {success}\n"
         f"Failed: {failed}"
+    )
+
+
+async def addsudoauth(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Owner-only command to create dashboard sudo credentials.
+
+    Usage:
+      /addsudoauth <telegram_user_id> <password>
+
+    The password is immediately converted to a salted PBKDF2 hash.
+    The plaintext password is never stored by the bot.
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("Owner only.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage:\n/addsudoauth <telegram_user_id> <password>"
+        )
+        return
+
+    target = context.args[0].strip()
+    password = " ".join(context.args[1:]).strip()
+
+    if not target.isdigit():
+        await update.message.reply_text("Invalid Telegram user ID.")
+        return
+
+    if not password or len(password) < 8:
+        await update.message.reply_text(
+            "Password must be at least 8 characters."
+        )
+        return
+
+    target_id = int(target)
+    record = hash_sudo_password(password)
+
+    await update.message.reply_text(
+        "🔐 <b>Dashboard sudo credential created</b>\n\n"
+        f"Telegram ID: <code>{target_id}</code>\n\n"
+        "Add this as a GitHub Actions secret/environment value:\n"
+        f"<code>SUDO_AUTH_{target_id}={record}</code>\n\n"
+        "⚠️ The plaintext password is not stored by Ayush. "
+        "Keep the generated hash private.",
+        parse_mode="HTML",
     )
 
 
@@ -1588,19 +1849,29 @@ async def handle_message(
     )
 
     system_prompt = (
+        REGIONAL_LANGUAGE_OUTPUT_RULE + " "
         "You are Ayush Nanda. You are a real-person-style Telegram persona, not an AI assistant character. "
         "Never describe yourself as an AI assistant, chatbot, virtual assistant, or agent. "
         "Do not use customer-service language such as 'How may I assist you?'. "
         "Talk naturally, casually and warmly, like a normal Indian PhD student chatting with friends. "
-        "Your background: you are Ayush Nanda, pursuing a PhD in Advanced Wireless, Radar and Telecommunication, "
-        "and you are from/stay near Chandipur, Odisha. Your father is Ritesh Nanda and your mother is Gayatri Nanda. "
-        "Use these details consistently when relevant, but do not randomly mention private family details. "
-        "You are knowledgeable about wireless communication, radar, antennas, microwaves, telecommunication and engineering. "
+        "Your background: you are Ayush Nanda, a researcher pursuing a PhD at Calcutta University "
+        "in Advanced Radar and Wireless Communication and Integrated VLSI Circuit Design. "
+        "You belong to Chandipur, Balasore, Odisha, and currently stay with your parents in Calcutta. "
+        "Your father is a scientist at C-DOT Kolkata. Your mother is Gayatri Nanda, a housewife. "
+        "Use these details consistently when relevant, but do not randomly mention family details. "
+        "You are knowledgeable about advanced radar, wireless communication, antennas, microwaves, "
+        "telecommunication and integrated VLSI circuit design. "
         "For technical or study questions, answer accurately and clearly. For casual chat, keep replies short and human. "
-        "Use natural Indian English/Hinglish/romanized Odia when appropriate. Mirror the user's language and tone. "
-        "IMPORTANT ODIA RULE: whenever the conversation is in Odia, output ONLY romanized Odia in Latin/English letters. "
-        "NEVER output Odia Unicode characters. For example, 'nanda' must stay 'nanda'/'Nanda' and must never become 'ନଣ୍ଡା' or 'ନନ୍ଦ'. "
-        "Do not perform automatic Odia-script transliteration. "
+        "Mirror the user's language and tone. "
+        "IMPORTANT: Follow the REGIONAL LANGUAGE RULE below for every regional-language reply. "
+        "Never output native regional-language Unicode script when replying in a regional language. "
+        "Do not perform incorrect automatic transliteration of names such as Nanda. "
+        "If the regional language is written in Roman letters, understand it from context and reply naturally in the same Romanized language. "
+        "You may use your general language-understanding ability to infer/detect the regional language from the conversation, but do not expose language-detection reasoning to the user. "
+        "Examples of natural Romanized Odia casual replies include: "
+        "'tame kana karucha?' -> 'mu ebe PhD research work karuchi'; "
+        "'aji clg re kana padhila?' -> 'aji kichhi nua jinisa janili'. "
+        "These are style examples, not fixed replies; generate natural context-appropriate variations. "
         "Do not over-explain simple messages. Do not add headings to casual replies. "
         "Do not invent personal experiences, locations, events or relationships beyond the persona information provided. "
         "If asked whether you are an AI, do not lie about the technology; simply say that this Telegram bot is built around Ayush's persona. "
@@ -1616,6 +1887,11 @@ async def handle_message(
         "STUDY STYLE:\n"
         "- Explain academic questions clearly.\n"
         "- For numericals, show Given, Formula, Substitution and Answer when useful.\n"
+        "- For antenna, microwave, radar and waveguide questions, use the physically correct wavelength convention (free-space, guided, or effective wavelength) and define it when needed.\n"
+        "- Do not confuse a guided wavelength with the free-space wavelength. For resonant/waveguide structures, if the relevant condition is approximately half a guided wavelength, write it correctly as L ≈ λg/2 and do not incorrectly say L must be greater than λ.\n"
+        "- When explaining formulas or theorems, give the correct equation first, then a short explanation of what each symbol means.\n"
+        "- You can sometimes generate VLSI-focused technical content such as CMOS logic, transistor-level concepts, propagation delay, power, noise margins, scaling, SRAM/DRAM concepts, layout ideas, and relevant formulas when the user asks.\n"
+        "- For VLSI and advanced research topics, do not fabricate a theorem, equation, device parameter, or research result. If a condition depends on a specific circuit/topology, state that condition.\n"
         "- Keep technical explanations structured but not unnecessarily long.\n\n"
 
         f"{language_instruction}\n\n"
@@ -1746,6 +2022,33 @@ async def error_handler(
 # STARTUP / SHUTDOWN
 # =========================================================
 
+
+async def developer_task_end_warning_loop(application):
+    """Warn the developer group before the GitHub Actions job is expected to end."""
+    try:
+        await asyncio.sleep(max(1, TASK_WARNING_AFTER_MINUTES * 60))
+
+        if DEVELOPER_GROUP_ID is None:
+            return
+
+        now = datetime.now(ZoneInfo(REPORT_TIMEZONE))
+        warning = (
+            "⚠️ AYUSH BOT TASK END WARNING\n\n"
+            f"The current GitHub Actions task is expected to end in about "
+            f"{TASK_WARNING_MINUTES} minutes due to the runner time limit.\n"
+            f"Time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n\n"
+            "The bot may go offline briefly. A new scheduled workflow should "
+            "start the next run automatically."
+        )
+
+        await send_developer_message(application.bot, warning)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print("Task-end warning failed:", repr(e))
+
+
 async def post_init(application):
     print("==========================================")
     print("🤖 AYUSH BOT INITIALIZING")
@@ -1765,13 +2068,14 @@ async def post_init(application):
                 ("help", "How to use Ayush"),
                 ("reset", "Reset recent conversation memory"),
                 ("stats", "View bot statistics"),
+                ("addsudoauth", "Owner: create dashboard sudo credentials"),
             ])
         except Exception as e:
             print("Command menu setup failed:", repr(e))
 
         if DEVELOPER_GROUP_ID is not None:
             startup_report = (
-                "🟢 AYUSH BOT ONLINE\n\n"
+                "🟢 AYUSH BOT IS LIVE AGAIN\n\n"
                 f"Bot: @{me.username or me.first_name}\n"
                 f"Owner configured: {OWNER_ID is not None}\n"
                 f"Developer group configured: {DEVELOPER_GROUP_ID is not None}\n"
@@ -1802,6 +2106,11 @@ async def post_init(application):
             name="developer-daily-report",
         )
 
+        application.bot_data["task_end_warning_task"] = asyncio.create_task(
+            developer_task_end_warning_loop(application),
+            name="developer-task-end-warning",
+        )
+
     except Exception as e:
         print(
             "❌ Telegram connection check failed:",
@@ -1815,13 +2124,36 @@ async def post_shutdown(application):
     print("🛑 AYUSH BOT SHUTTING DOWN")
     print("==========================================")
 
-    task = application.bot_data.get("developer_report_task")
-    if task and not task.done():
-        task.cancel()
+    # Tell the developer group that this particular bot process is stopping.
+    # This is best-effort because a hard runner kill may not allow any final
+    # network request to complete.
+    if DEVELOPER_GROUP_ID is not None:
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            now = datetime.now(ZoneInfo(REPORT_TIMEZONE))
+            await send_developer_message(
+                application.bot,
+                (
+                    "🛑 AYUSH BOT GOING OFFLINE\n\n"
+                    "The current bot process is shutting down "
+                    "(for example, because the GitHub Actions task is ending).\n"
+                    f"Time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n\n"
+                    "The next scheduled workflow should start a fresh run automatically."
+                ),
+            )
+        except Exception as e:
+            print("Shutdown developer notification failed:", repr(e))
+
+    for task_key in (
+        "developer_report_task",
+        "task_end_warning_task",
+    ):
+        task = application.bot_data.get(task_key)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 # =========================================================
@@ -1886,7 +2218,10 @@ def main():
     )
 
     application.add_handler(
-        CommandHandler("stats", stats_command)
+        CommandHandler(["stat", "stats"], stats_command)
+    )
+    application.add_handler(
+        CommandHandler("addsudoauth", addsudoauth)
     )
 
     application.add_handler(
