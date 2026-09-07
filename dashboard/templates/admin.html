@@ -1,0 +1,150 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ayush AI — Admin Dashboard</title>
+<link rel="stylesheet" href="/static/site.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="admin-body">
+
+<nav class="nav wrap">
+  <a class="brand" href="/"><span class="brand-mark">A</span><span>Ayush AI</span></a>
+  <div class="admin-user">
+    {% if user.picture %}<img src="{{ user.picture }}" alt="">{% endif %}
+    <span>{{ user.name }}</span>
+    <a href="/logout">Logout</a>
+  </div>
+</nav>
+
+<main class="wrap dashboard">
+<div class="dash-head">
+  <div><div class="eyebrow">SECURE ADMIN AREA</div><h1>Command Center</h1><p>Private analytics and operational visibility.</p></div>
+  <div class="secure-pill">🔒 Authenticated</div>
+</div>
+
+<section class="metric-grid">
+  <div class="metric"><span>Bot status</span><strong class="green">● Live</strong></div>
+  <div class="metric"><span>Total messages</span><strong>{{ stats.get('total_messages', 0) }}</strong></div>
+  <div class="metric"><span>Active users</span><strong>{{ stats.get('active_users', 0) }}</strong></div>
+  <div class="metric"><span>Groups</span><strong>{{ stats.get('group_count', stats.get('groups_count', 0)) }}</strong></div>
+  <div class="metric"><span>AI replies</span><strong>{{ stats.get('ai_replies', 0) }}</strong></div>
+  <div class="metric"><span>Errors</span><strong>{{ stats.get('error_count', stats.get('errors', 0)) }}</strong></div>
+  <div class="metric"><span>Total tokens</span><strong>{{ "{:,}".format(stats.get('total_tokens', 0)) }}</strong></div>
+  <div class="metric"><span>Last update</span><strong>{{ stats.get('last_updated', '') }}</strong></div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Activity</h2><p>Private bot activity telemetry.</p></div></div>
+  <div class="chart-box"><canvas id="activityChart"></canvas></div>
+</section>
+
+<section class="two-col">
+<div class="panel">
+  <div class="panel-head"><div><h2>AI providers</h2><p>Provider calls from telemetry.</p></div></div>
+  {% set providers = stats.get('provider_calls', {}) %}
+  {% for name, value in providers.items() %}
+  <div class="provider-row">
+    <span>{{ name }}</span><div class="bar"><i style="width:{{ [value * 4, 100] | min }}%"></i></div><b>{{ value }}</b>
+  </div>
+  {% endfor %}
+  {% if not providers %}<div class="empty">Provider telemetry will appear here when the bot emits it.</div>{% endif %}
+  <div class="usage-summary">
+    <div><span>Input</span><b>{{ "{:,}".format(stats.get('prompt_tokens', 0)) }}</b></div>
+    <div><span>Output</span><b>{{ "{:,}".format(stats.get('completion_tokens', 0)) }}</b></div>
+    <div><span>Total</span><b>{{ "{:,}".format(stats.get('total_tokens', 0)) }}</b></div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><div><h2>Groups</h2><p>Visible only to authenticated admins.</p></div></div>
+  {% for group in stats.get('groups', []) %}
+  <div class="list-row">
+    <div><b>{{ group.get('title', group.get('name', 'Group')) }}</b><small>{{ group.get('id', '') }}</small></div>
+    <strong>{{ group.get('messages', 0) }}</strong>
+  </div>
+  {% endfor %}
+  {% if not stats.get('groups') %}<div class="empty">Group telemetry will appear when the bot records group metadata.</div>{% endif %}
+</div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Users</h2><p>Private user activity. Only authenticated admins can view this.</p></div></div>
+  <div class="table-wrap">
+  <table><thead><tr><th>User</th><th>Telegram ID</th><th>Messages</th><th>Last active</th></tr></thead><tbody>
+  {% for u in stats.get('users', []) %}
+  <tr><td>{{ u.get('name', u.get('username', 'Unknown')) }}</td><td>{{ u.get('id', '') }}</td><td>{{ u.get('messages', 0) }}</td><td>{{ u.get('last_active', '') }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+  </div>
+  {% if not stats.get('users') %}<div class="empty">User activity will appear when the bot emits user telemetry.</div>{% endif %}
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Last 1-hour logs</h2><p>Only recent operational logs are shown here.</p></div></div>
+  <div class="logs">
+  {% for log in stats.get('logs', []) %}
+    <div class="log-line"><span>{{ log.get('time','') }}</span><b>{{ log.get('level','INFO') }}</b><p>{{ log.get('message','') }}</p></div>
+  {% endfor %}
+  {% if not stats.get('logs') %}<div class="empty">No recent logs are present in the current telemetry yet.</div>{% endif %}
+  </div>
+</section>
+
+{% if is_owner %}
+<section class="panel" id="security">
+  <div class="panel-head">
+    <div><h2>Sudo management</h2><p>Owner-only. Add or remove dashboard administrators by numeric Telegram ID.</p></div>
+    <span class="owner-badge">OWNER</span>
+  </div>
+
+  <form class="sudo-form" method="post" action="/api/sudo/add">
+    <input name="telegram_id" inputmode="numeric" pattern="[0-9]+" placeholder="Telegram User ID" required>
+    <button class="btn primary" type="submit">+ Add Sudo</button>
+  </form>
+
+  <div class="sudo-list">
+  {% for sid in access.get('sudo_ids', []) %}
+    <div class="sudo-row">
+      <span>👤 {{ sid }}</span>
+      <form method="post" action="/api/sudo/remove">
+        <input type="hidden" name="telegram_id" value="{{ sid }}">
+        <button class="danger" type="submit">Remove</button>
+      </form>
+    </div>
+  {% endfor %}
+  {% if not access.get('sudo_ids') %}<div class="empty">No sudo members configured.</div>{% endif %}
+  </div>
+</section>
+{% endif %}
+</main>
+
+<script>
+const stats = {{ stats | tojson }};
+const activity = Array.isArray(stats.activity) ? stats.activity : [];
+const labels = activity.map(x => x.label || x.time || '');
+const values = activity.map(x => Number(x.messages || x.count || 0));
+
+new Chart(document.getElementById('activityChart'), {
+  type: 'line',
+  data: {
+    labels,
+    datasets: [{
+      label: 'Messages',
+      data: values,
+      tension: .35,
+      borderWidth: 2,
+      pointRadius: 2
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: { x: { grid: { display: false } }, y: { beginAtZero: true } }
+  }
+});
+</script>
+</body>
+</html>
