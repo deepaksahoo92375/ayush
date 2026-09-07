@@ -1,0 +1,467 @@
+
+import os
+import json
+import time
+import secrets
+import hashlib
+import base64
+import urllib.parse
+from datetime import datetime, timezone
+
+import requests
+import jwt
+from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
+from starlette.staticfiles import StaticFiles
+
+APP_NAME = "Ayush AI"
+PUBLIC_BOT_URL = "https://t.me/ayush2026bot"
+ODIA_GROUP_URL = "https://t.me/+lpNB4X_cNtljOGRl"
+INTERNATIONAL_GROUP_URL = "https://t.me/+coEwfRzFRmgxYTM1"
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+OWNER_ID = int(os.getenv("OWNER_ID", "0") or 0)
+GIST_ID = os.getenv("GIST_ID", "")
+GIST_TOKEN = os.getenv("GIST_TOKEN", "")
+GIST_FILENAME = os.getenv("GIST_FILENAME", "ayush_stats.json")
+ACCESS_FILENAME = os.getenv("ACCESS_FILENAME", "ayush_access.json")
+
+TELEGRAM_CLIENT_ID = os.getenv("TELEGRAM_CLIENT_ID", "")
+TELEGRAM_CLIENT_SECRET = os.getenv("TELEGRAM_CLIENT_SECRET", "")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+SESSION_SECRET = os.getenv("SESSION_SECRET") or secrets.token_urlsafe(48)
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() == "true"
+
+app = FastAPI(title=APP_NAME)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    max_age=60 * 60 * 8,
+    same_site="lax",
+    https_only=COOKIE_SECURE,
+)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+TELEGRAM_ISSUER = "https://oauth.telegram.org"
+TELEGRAM_AUTH_URL = f"{TELEGRAM_ISSUER}/auth"
+TELEGRAM_TOKEN_URL = f"{TELEGRAM_ISSUER}/token"
+TELEGRAM_JWKS_URL = f"{TELEGRAM_ISSUER}/.well-known/jwks.json"
+
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+def callback_url(request: Request):
+    if PUBLIC_BASE_URL:
+        return f"{PUBLIC_BASE_URL}/auth/callback"
+    return str(request.base_url).rstrip("/") + "/auth/callback"
+
+
+def require_config():
+    missing = []
+    values = {
+        "TELEGRAM_CLIENT_ID": TELEGRAM_CLIENT_ID,
+        "TELEGRAM_CLIENT_SECRET": TELEGRAM_CLIENT_SECRET,
+        "PUBLIC_BASE_URL": PUBLIC_BASE_URL,
+        "OWNER_ID": str(OWNER_ID or ""),
+        "GIST_ID": GIST_ID,
+        "GIST_TOKEN": GIST_TOKEN,
+        "BOT_TOKEN": BOT_TOKEN,
+    }
+    for key, value in values.items():
+        if not value:
+            missing.append(key)
+    if missing:
+        raise RuntimeError("Missing dashboard configuration: " + ", ".join(missing))
+
+
+def pkce_pair():
+    verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(verifier.encode()).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return verifier, challenge
+
+
+def gist_headers():
+    return {
+        "Authorization": f"Bearer {GIST_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+
+
+def get_gist():
+    response = requests.get(
+        f"https://api.github.com/gists/{GIST_ID}",
+        headers=gist_headers(),
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def read_gist_file(filename, default):
+    try:
+        gist = get_gist()
+        item = gist.get("files", {}).get(filename)
+        if not item:
+            return default
+        return json.loads(item.get("content", "") or "{}")
+    except Exception:
+        return default
+
+
+def patch_gist_files(files):
+    payload = {
+        "files": {
+            name: {"content": json.dumps(value, indent=2)}
+            for name, value in files.items()
+        }
+    }
+    response = requests.patch(
+        f"https://api.github.com/gists/{GIST_ID}",
+        headers={**gist_headers(), "Content-Type": "application/json"},
+        json=payload,
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def load_access():
+    default = {"owner_id": OWNER_ID, "sudo_ids": [], "audit": []}
+    data = read_gist_file(ACCESS_FILENAME, default)
+
+    if not isinstance(data, dict):
+        data = default
+
+    data.setdefault("owner_id", OWNER_ID)
+    data.setdefault("sudo_ids", [])
+    data.setdefault("audit", [])
+
+    cleaned = []
+    for value in data["sudo_ids"]:
+        try:
+            number = int(value)
+            if number != OWNER_ID:
+                cleaned.append(number)
+        except (TypeError, ValueError):
+            pass
+
+    data["sudo_ids"] = sorted(set(cleaned))
+    return data
+
+
+def save_access(data):
+    patch_gist_files({ACCESS_FILENAME: data})
+
+
+def is_allowed(user_id):
+    access = load_access()
+    return int(user_id) == OWNER_ID or int(user_id) in set(access["sudo_ids"])
+
+
+def current_user(request: Request):
+    return request.session.get("telegram_user")
+
+
+def admin_required(request: Request):
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=403, detail="Invalid credentials")
+
+    if not is_allowed(int(user["id"])):
+        request.session.clear()
+        raise HTTPException(status_code=403, detail="Invalid credentials")
+
+    return user
+
+
+def send_owner_security_report(user, request, reason):
+    if not BOT_TOKEN or not OWNER_ID:
+        return
+
+    ip = request.client.host if request.client else "unknown"
+    username = user.get("username") or "none"
+    name = user.get("name") or "unknown"
+
+    message = (
+        "🚨 DASHBOARD SECURITY ALERT\n\n"
+        f"Reason: {reason}\n"
+        f"Telegram ID: {user.get('id', 'unknown')}\n"
+        f"Name: {name}\n"
+        f"Username: @{username}\n"
+        f"IP: {ip}\n"
+        f"Time: {now_utc().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    )
+
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={"chat_id": OWNER_ID, "text": message},
+            timeout=8,
+        )
+    except Exception:
+        pass
+
+
+def report_login_failure(user, request):
+    access = load_access()
+    access["audit"].append(
+        {
+            "event": "invalid_login",
+            "user_id": int(user.get("id", 0)),
+            "username": user.get("username"),
+            "name": user.get("name"),
+            "ip": request.client.host if request.client else "unknown",
+            "time": now_utc().isoformat(),
+        }
+    )
+    access["audit"] = access["audit"][-200:]
+
+    try:
+        save_access(access)
+    except Exception:
+        pass
+
+    send_owner_security_report(user, request, "Unauthorized Telegram login attempt")
+
+
+def build_login_url(request):
+    require_config()
+
+    state = secrets.token_urlsafe(32)
+    verifier, challenge = pkce_pair()
+    nonce = secrets.token_urlsafe(32)
+
+    request.session["oidc_state"] = state
+    request.session["pkce_verifier"] = verifier
+    request.session["oidc_nonce"] = nonce
+
+    params = {
+        "client_id": TELEGRAM_CLIENT_ID,
+        "redirect_uri": callback_url(request),
+        "response_type": "code",
+        "scope": "openid profile",
+        "state": state,
+        "nonce": nonce,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+
+    return TELEGRAM_AUTH_URL + "?" + urllib.parse.urlencode(params)
+
+
+def verify_id_token(id_token, nonce):
+    jwks = requests.get(TELEGRAM_JWKS_URL, timeout=10).json()
+    header = jwt.get_unverified_header(id_token)
+
+    key = next(
+        (item for item in jwks.get("keys", []) if item.get("kid") == header.get("kid")),
+        None,
+    )
+    if not key:
+        raise ValueError("Unknown Telegram signing key")
+
+    claims = jwt.decode(
+        id_token,
+        key,
+        algorithms=["RS256", "ES256"],
+        audience=str(TELEGRAM_CLIENT_ID),
+        issuer=TELEGRAM_ISSUER,
+        options={"require": ["iss", "aud", "exp", "iat", "sub"]},
+    )
+
+    if nonce and claims.get("nonce") != nonce:
+        raise ValueError("Invalid nonce")
+
+    return claims
+
+
+def normalize_user(claims):
+    user_id = int(claims.get("sub") or claims.get("id"))
+
+    return {
+        "id": user_id,
+        "name": claims.get("name") or claims.get("preferred_username") or str(user_id),
+        "username": claims.get("preferred_username"),
+        "picture": claims.get("picture"),
+    }
+
+
+@app.get("/", response_class=HTMLResponse)
+def public_home(request: Request):
+    error = request.query_params.get("error")
+
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "bot_url": PUBLIC_BOT_URL,
+            "odia_url": ODIA_GROUP_URL,
+            "international_url": INTERNATIONAL_GROUP_URL,
+            "error": error,
+        },
+    )
+
+
+@app.get("/login")
+def login(request: Request):
+    try:
+        return RedirectResponse(build_login_url(request), status_code=302)
+    except RuntimeError as exc:
+        return HTMLResponse(
+            f"<h2>Dashboard setup required</h2><pre>{exc}</pre>",
+            status_code=500,
+        )
+
+
+@app.get("/auth/callback")
+def auth_callback(request: Request, code: str = "", state: str = ""):
+    expected_state = request.session.pop("oidc_state", None)
+    verifier = request.session.pop("pkce_verifier", None)
+    nonce = request.session.pop("oidc_nonce", None)
+
+    if (
+        not code
+        or not state
+        or not expected_state
+        or not secrets.compare_digest(state, expected_state)
+    ):
+        return RedirectResponse("/?error=invalid_auth_request", status_code=302)
+
+    try:
+        basic = base64.b64encode(
+            f"{TELEGRAM_CLIENT_ID}:{TELEGRAM_CLIENT_SECRET}".encode()
+        ).decode()
+
+        response = requests.post(
+            TELEGRAM_TOKEN_URL,
+            headers={
+                "Authorization": f"Basic {basic}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": callback_url(request),
+                "client_id": TELEGRAM_CLIENT_ID,
+                "code_verifier": verifier,
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        token_data = response.json()
+        claims = verify_id_token(token_data["id_token"], nonce)
+        user = normalize_user(claims)
+
+        if not is_allowed(user["id"]):
+            report_login_failure(user, request)
+            return RedirectResponse(
+                "/?error=invalid_credentials",
+                status_code=302,
+            )
+
+        request.session["telegram_user"] = user
+        return RedirectResponse("/admin", status_code=302)
+
+    except Exception:
+        return RedirectResponse(
+            "/?error=authentication_failed",
+            status_code=302,
+        )
+
+
+@app.get("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin(request: Request):
+    user = admin_required(request)
+    access = load_access()
+    stats = read_gist_file(GIST_FILENAME, {})
+
+    return templates.TemplateResponse(
+        "admin.html",
+        {
+            "request": request,
+            "user": user,
+            "stats": stats,
+            "access": access,
+            "is_owner": int(user["id"]) == OWNER_ID,
+        },
+    )
+
+
+@app.get("/api/dashboard")
+def dashboard_api(request: Request):
+    admin_required(request)
+    return JSONResponse(read_gist_file(GIST_FILENAME, {}))
+
+
+@app.post("/api/sudo/add")
+def add_sudo(request: Request, telegram_id: str = Form(...)):
+    user = admin_required(request)
+
+    if int(user["id"]) != OWNER_ID:
+        raise HTTPException(status_code=403, detail="Owner only")
+
+    if not telegram_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="Telegram ID must be numeric")
+
+    target = int(telegram_id.strip())
+
+    if target == OWNER_ID:
+        raise HTTPException(status_code=400, detail="Owner is already authorized")
+
+    access = load_access()
+
+    if target not in access["sudo_ids"]:
+        access["sudo_ids"].append(target)
+        access["sudo_ids"] = sorted(set(access["sudo_ids"]))
+        access["audit"].append(
+            {
+                "event": "sudo_added",
+                "by": int(user["id"]),
+                "target": target,
+                "time": now_utc().isoformat(),
+            }
+        )
+        access["audit"] = access["audit"][-200:]
+        save_access(access)
+
+    return RedirectResponse("/admin#security", status_code=303)
+
+
+@app.post("/api/sudo/remove")
+def remove_sudo(request: Request, telegram_id: str = Form(...)):
+    user = admin_required(request)
+
+    if int(user["id"]) != OWNER_ID:
+        raise HTTPException(status_code=403, detail="Owner only")
+
+    if not telegram_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="Invalid Telegram ID")
+
+    target = int(telegram_id.strip())
+    access = load_access()
+    access["sudo_ids"] = [x for x in access["sudo_ids"] if int(x) != target]
+    access["audit"].append(
+        {
+            "event": "sudo_removed",
+            "by": int(user["id"]),
+            "target": target,
+            "time": now_utc().isoformat(),
+        }
+    )
+    access["audit"] = access["audit"][-200:]
+    save_access(access)
+
+    return RedirectResponse("/admin#security", status_code=303)
