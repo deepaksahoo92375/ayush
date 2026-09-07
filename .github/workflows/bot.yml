@@ -25,5 +25,10 @@ jobs:
       - name: Run Ayush Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          SUDO_USERS: ${{ secrets.SUDO_USERS }}
         run: python3 bot.py
