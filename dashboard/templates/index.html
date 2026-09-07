@@ -1,0 +1,830 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#080b12">
+<title>Ayush AI — Telegram Assistant</title>
+
+<link rel="stylesheet" href="/static/site.css">
+
+<style>
+/* =========================================================
+   AYUSH AI PUBLIC LANDING PAGE
+   ========================================================= */
+
+body.public-page {
+    min-height: 100vh;
+}
+
+.public-page .wallpaper {
+    z-index: -3;
+}
+
+.public-page .wallpaper-overlay {
+    z-index: -2;
+}
+
+.public-page .page-content {
+    position: relative;
+    z-index: 1;
+}
+
+/* Navigation */
+
+.nav {
+    width: min(1200px, calc(100% - 40px));
+    margin: 0 auto;
+    padding: 24px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 11px;
+    color: #fff;
+    text-decoration: none;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+}
+
+.brand-mark {
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.13);
+    border: 1px solid rgba(255,255,255,0.16);
+    box-shadow: 0 10px 35px rgba(0,0,0,0.25);
+}
+
+.nav-login {
+    color: rgba(255,255,255,0.9);
+    text-decoration: none;
+    padding: 10px 15px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.11);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    transition: 0.2s ease;
+}
+
+.nav-login:hover {
+    transform: translateY(-2px);
+    background: rgba(255,255,255,0.15);
+}
+
+/* Main */
+
+.public-main {
+    width: min(1200px, calc(100% - 40px));
+    margin: 0 auto;
+}
+
+.hero {
+    min-height: 650px;
+    display: grid;
+    grid-template-columns: 1.08fr 0.92fr;
+    align-items: center;
+    gap: 70px;
+    padding: 65px 0 80px;
+}
+
+.hero-copy {
+    max-width: 700px;
+}
+
+.public-page .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 18px;
+}
+
+.pulse {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    border-radius: 50%;
+    background: #63ffa3;
+    box-shadow: 0 0 14px rgba(99,255,163,0.9);
+    animation: publicPulse 1.6s infinite;
+}
+
+@keyframes publicPulse {
+    0%, 100% {
+        opacity: 0.4;
+        transform: scale(0.8);
+    }
+    50% {
+        opacity: 1;
+        transform: scale(1.1);
+    }
+}
+
+.hero h1 {
+    margin: 0 0 22px;
+    font-size: clamp(44px, 7vw, 78px);
+    line-height: 0.98;
+    letter-spacing: -0.055em;
+}
+
+.hero h1 span {
+    opacity: 0.62;
+}
+
+.hero-text {
+    max-width: 620px;
+    margin: 0 0 30px;
+    color: rgba(255,255,255,0.67);
+    font-size: 17px;
+    line-height: 1.7;
+}
+
+.hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 48px;
+    padding: 12px 19px;
+    border-radius: 14px;
+    color: #fff;
+    text-decoration: none;
+    border: 1px solid rgba(255,255,255,0.13);
+    transition:
+        transform 0.2s ease,
+        background 0.2s ease;
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+}
+
+.btn.primary {
+    background: rgba(90,150,255,0.28);
+}
+
+.btn.primary:hover {
+    background: rgba(90,150,255,0.38);
+}
+
+.btn.secondary {
+    background: rgba(255,255,255,0.09);
+}
+
+.btn.secondary:hover {
+    background: rgba(255,255,255,0.16);
+}
+
+/* Bot status */
+
+.status-card {
+    width: fit-content;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 15px;
+    border-radius: 15px;
+    background: rgba(12,18,31,0.58);
+    border: 1px solid rgba(255,255,255,0.10);
+    box-shadow: 0 18px 50px rgba(0,0,0,0.18);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #63ffa3;
+    box-shadow: 0 0 15px rgba(99,255,163,0.8);
+}
+
+.status-card b,
+.status-card small {
+    display: block;
+}
+
+.status-card b {
+    font-size: 13px;
+}
+
+.status-card small {
+    margin-top: 2px;
+    color: rgba(255,255,255,0.5);
+    font-size: 11px;
+}
+
+/* Hero visual */
+
+.hero-visual {
+    min-height: 440px;
+    position: relative;
+    display: grid;
+    place-items: center;
+}
+
+.orb {
+    position: absolute;
+    width: 300px;
+    height: 300px;
+    border-radius: 50%;
+    background:
+        radial-gradient(
+            circle at 35% 30%,
+            rgba(130,190,255,0.35),
+            rgba(90,100,255,0.08) 42%,
+            transparent 70%
+        );
+    filter: blur(8px);
+    animation: orbFloat 7s ease-in-out infinite alternate;
+}
+
+@keyframes orbFloat {
+    from {
+        transform: translateY(8px) scale(0.98);
+    }
+    to {
+        transform: translateY(-15px) scale(1.05);
+    }
+}
+
+.glass-panel {
+    position: relative;
+    width: min(430px, 100%);
+    padding: 25px;
+    border-radius: 28px;
+    background: rgba(12,18,31,0.62);
+    border: 1px solid rgba(255,255,255,0.13);
+    box-shadow:
+        0 35px 90px rgba(0,0,0,0.32),
+        inset 0 1px 0 rgba(255,255,255,0.05);
+    backdrop-filter: blur(25px);
+    -webkit-backdrop-filter: blur(25px);
+}
+
+.mini-top {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    color: rgba(255,255,255,0.62);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+}
+
+.mini-top .live {
+    color: #b6ffd5;
+    letter-spacing: 0.05em;
+}
+
+.chat-line {
+    width: fit-content;
+    max-width: 82%;
+    margin: 13px 0;
+    padding: 12px 15px;
+    border-radius: 15px;
+    font-size: 14px;
+    line-height: 1.4;
+}
+
+.chat-line.left {
+    background: rgba(255,255,255,0.08);
+}
+
+.chat-line.right {
+    margin-left: auto;
+    background: rgba(90,150,255,0.23);
+}
+
+.wave {
+    height: 70px;
+    margin-top: 25px;
+    border-radius: 16px;
+    opacity: 0.65;
+    background:
+        repeating-linear-gradient(
+            90deg,
+            transparent 0,
+            transparent 7px,
+            rgba(255,255,255,0.18) 8px,
+            transparent 9px,
+            transparent 15px
+        );
+    mask-image: linear-gradient(
+        90deg,
+        transparent,
+        #000 12%,
+        #000 88%,
+        transparent
+    );
+}
+
+/* Community */
+
+.community {
+    padding: 30px 0 75px;
+}
+
+.section-head {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 30px;
+    margin-bottom: 22px;
+}
+
+.section-head h2 {
+    margin: 4px 0 0;
+    font-size: clamp(25px, 4vw, 35px);
+    letter-spacing: -0.03em;
+}
+
+.section-head p {
+    margin: 0;
+    max-width: 360px;
+    color: rgba(255,255,255,0.52);
+    line-height: 1.5;
+}
+
+.community-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+.community-card {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 16px;
+    padding: 21px;
+    border-radius: 21px;
+    color: #fff;
+    text-decoration: none;
+    background: rgba(12,18,31,0.60);
+    border: 1px solid rgba(255,255,255,0.11);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.18);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    transition:
+        transform 0.22s ease,
+        background 0.22s ease;
+}
+
+.community-card:hover {
+    transform: translateY(-4px);
+    background: rgba(20,28,46,0.75);
+}
+
+.community-card .icon {
+    width: 45px;
+    height: 45px;
+    display: grid;
+    place-items: center;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.08);
+    font-size: 21px;
+}
+
+.community-card h3 {
+    margin: 0 0 4px;
+    font-size: 15px;
+}
+
+.community-card p {
+    margin: 0;
+    color: rgba(255,255,255,0.5);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.community-card > span:last-child {
+    color: rgba(255,255,255,0.6);
+    font-size: 20px;
+}
+
+/* Alert */
+
+.alert {
+    margin-top: 18px;
+    max-width: 600px;
+    padding: 13px 16px;
+    border-radius: 14px;
+    background: rgba(255,80,80,0.12);
+    border: 1px solid rgba(255,100,100,0.17);
+    color: rgba(255,235,235,0.9);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+/* Footer */
+
+.footer {
+    width: min(1200px, calc(100% - 40px));
+    margin: 0 auto;
+    padding: 25px 0 32px;
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    color: rgba(255,255,255,0.4);
+    font-size: 11px;
+    border-top: 1px solid rgba(255,255,255,0.07);
+}
+
+/* Responsive */
+
+@media (max-width: 850px) {
+    .nav,
+    .public-main,
+    .footer {
+        width: calc(100% - 28px);
+    }
+
+    .hero {
+        grid-template-columns: 1fr;
+        gap: 35px;
+        padding-top: 45px;
+    }
+
+    .hero-visual {
+        min-height: 360px;
+    }
+
+    .community-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .section-head {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 8px;
+    }
+}
+
+@media (max-width: 500px) {
+    .nav,
+    .public-main,
+    .footer {
+        width: calc(100% - 20px);
+    }
+
+    .nav {
+        padding: 16px 0;
+    }
+
+    .hero {
+        min-height: auto;
+        padding: 42px 0 55px;
+    }
+
+    .hero h1 {
+        font-size: 43px;
+    }
+
+    .hero-text {
+        font-size: 15px;
+    }
+
+    .hero-actions {
+        flex-direction: column;
+    }
+
+    .hero-actions .btn {
+        width: 100%;
+    }
+
+    .hero-visual {
+        min-height: 315px;
+    }
+
+    .glass-panel {
+        padding: 19px;
+        border-radius: 22px;
+    }
+
+    .community {
+        padding-bottom: 50px;
+    }
+
+    .community-card {
+        grid-template-columns: auto 1fr auto;
+        padding: 16px;
+    }
+
+    .footer {
+        flex-direction: column;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .pulse,
+    .orb {
+        animation: none;
+    }
+
+    .btn,
+    .community-card,
+    .nav-login {
+        transition: none;
+    }
+}
+</style>
+</head>
+
+<body class="public-page">
+
+<!-- Server-selected initial wallpaper -->
+<div
+    id="wallpaper"
+    class="wallpaper"
+    style="background-image: url('{{ wallpaper.url }}');"
+></div>
+<div class="wallpaper-overlay"></div>
+
+<div class="page-content">
+
+<nav class="nav">
+    <a class="brand" href="/">
+        <span class="brand-mark">A</span>
+        <span>Ayush AI</span>
+    </a>
+
+    <a class="nav-login" href="/login">
+        Admin Login
+    </a>
+</nav>
+
+<main class="public-main">
+
+<section class="hero">
+
+    <div class="hero-copy">
+
+        <div class="eyebrow">
+            <span class="pulse"></span>
+            AYUSH TELEGRAM ASSISTANT
+        </div>
+
+        <h1>
+            Smart conversation.<br>
+            <span>Human touch.</span>
+        </h1>
+
+        <p class="hero-text">
+            Meet Ayush Nanda — an AI Telegram assistant built
+            for natural conversations, learning, research and
+            everyday help.
+        </p>
+
+        <div class="hero-actions">
+            <a
+                class="btn primary"
+                href="{{ bot_url }}"
+                target="_blank"
+                rel="noopener noreferrer"
+            >
+                Use Ayush Bot ↗
+            </a>
+
+            <a class="btn secondary" href="/login">
+                Admin dashboard
+            </a>
+        </div>
+
+        <div class="status-card">
+            <span class="status-dot"></span>
+
+            <div>
+                <b>Bot is live</b>
+                <small>Available on Telegram</small>
+            </div>
+        </div>
+
+        {% if error %}
+        <div class="alert">
+            {% if error == "invalid_credentials" %}
+                <b>Invalid credentials</b><br>
+                Your credentials have been reported to the owner.
+            {% elif error == "authentication_failed" %}
+                <b>Authentication failed</b><br>
+                Please try Telegram login again.
+            {% else %}
+                <b>Login request failed</b><br>
+                Please try again.
+            {% endif %}
+        </div>
+        {% endif %}
+
+    </div>
+
+    <div class="hero-visual">
+
+        <div class="orb"></div>
+
+        <div class="glass-panel">
+
+            <div class="mini-top">
+                <span>AYUSH AI</span>
+                <span class="live">● LIVE</span>
+            </div>
+
+            <div class="chat-line left">
+                Hii 😊
+            </div>
+
+            <div class="chat-line right">
+                Heyy! What's up?
+            </div>
+
+            <div class="chat-line left">
+                Need help with something?
+            </div>
+
+            <div class="wave"></div>
+
+        </div>
+
+    </div>
+
+</section>
+
+<section class="community">
+
+    <div class="section-head">
+
+        <div>
+            <div class="eyebrow">
+                COMMUNITY
+            </div>
+
+            <h2>
+                Join the Ayush community
+            </h2>
+        </div>
+
+        <p>
+            Connect with the community on Telegram.
+        </p>
+
+    </div>
+
+    <div class="community-grid">
+
+        <a
+            class="community-card"
+            href="{{ odia_url }}"
+            target="_blank"
+            rel="noopener noreferrer"
+        >
+            <div class="icon">🇮🇳</div>
+
+            <div>
+                <h3>Join our Odia Group</h3>
+                <p>
+                    Connect with the Odia community on Telegram.
+                </p>
+            </div>
+
+            <span>↗</span>
+        </a>
+
+        <a
+            class="community-card"
+            href="{{ international_url }}"
+            target="_blank"
+            rel="noopener noreferrer"
+        >
+            <div class="icon">🌎</div>
+
+            <div>
+                <h3>Join our International Group</h3>
+                <p>
+                    Meet the wider Ayush community.
+                </p>
+            </div>
+
+            <span>↗</span>
+        </a>
+
+    </div>
+
+</section>
+
+</main>
+
+<footer class="footer">
+    <span>© Ayush AI</span>
+    <span>Telegram assistant • Built for the community</span>
+</footer>
+
+</div>
+
+<script>
+/*
+ * The server decides which wallpaper is active.
+ * Both the public page and admin page therefore see
+ * the same wallpaper for the same server hour.
+ */
+
+let currentWallpaperIndex = null;
+
+async function syncWallpaper() {
+    const wallpaper =
+        document.getElementById("wallpaper");
+
+    if (!wallpaper) {
+        return;
+    }
+
+    try {
+        const response = await fetch(
+            "/api/wallpaper",
+            {
+                cache: "no-store",
+            }
+        );
+
+        if (!response.ok) {
+            throw new Error("Wallpaper API failed");
+        }
+
+        const data = await response.json();
+
+        if (!data || !data.url) {
+            return;
+        }
+
+        if (
+            currentWallpaperIndex !== null &&
+            currentWallpaperIndex === data.index
+        ) {
+            return;
+        }
+
+        if (currentWallpaperIndex === null) {
+            wallpaper.style.backgroundImage =
+                `url("${data.url}")`;
+
+            currentWallpaperIndex =
+                data.index;
+
+            return;
+        }
+
+        wallpaper.classList.add(
+            "wallpaper-changing"
+        );
+
+        window.setTimeout(() => {
+            wallpaper.style.backgroundImage =
+                `url("${data.url}")`;
+
+            currentWallpaperIndex =
+                data.index;
+
+            window.setTimeout(() => {
+                wallpaper.classList.remove(
+                    "wallpaper-changing"
+                );
+            }, 120);
+
+        }, 850);
+
+    } catch (error) {
+        console.warn(
+            "Wallpaper sync failed:",
+            error
+        );
+    }
+}
+
+document.addEventListener(
+    "DOMContentLoaded",
+    async () => {
+        await syncWallpaper();
+
+        /* Check for the server's next hourly wallpaper. */
+        window.setInterval(
+            syncWallpaper,
+            60000
+        );
+    }
+);
+</script>
+
+</body>
+</html>
