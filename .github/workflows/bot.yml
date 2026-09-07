@@ -90,14 +90,20 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           DEVELOPER_GROUP_ID: ${{ secrets.DEVELOPER_GROUP_ID }}
+
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+
           OWNER_ID: ${{ secrets.OWNER_ID }}
         run: |
           echo "=========================================="
           echo "CHECKING SECRETS"
           echo "=========================================="
 
+          # Telegram
           if [ -z "$BOT_TOKEN" ]; then
             echo "❌ BOT_TOKEN is missing"
             exit 1
@@ -105,6 +111,7 @@ jobs:
             echo "✅ BOT_TOKEN is present"
           fi
 
+          # Developer group
           if [ -z "$DEVELOPER_GROUP_ID" ]; then
             echo "❌ DEVELOPER_GROUP_ID is missing"
             exit 1
@@ -112,48 +119,93 @@ jobs:
             echo "✅ DEVELOPER_GROUP_ID is present"
           fi
 
+          # Gemini
           if [ -z "$GEMINI_API_KEY" ]; then
             echo "⚠️ GEMINI_API_KEY is missing"
           else
             echo "✅ GEMINI_API_KEY is present"
           fi
 
+          # OpenAI
           if [ -z "$OPENAI_API_KEY" ]; then
             echo "⚠️ OPENAI_API_KEY is missing"
           else
             echo "✅ OPENAI_API_KEY is present"
           fi
 
+          # Groq
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "⚠️ GROQ_API_KEY is missing"
+          else
+            echo "✅ GROQ_API_KEY is present"
+          fi
+
+          # OpenRouter
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "⚠️ OPENROUTER_API_KEY is missing"
+          else
+            echo "✅ OPENROUTER_API_KEY is present"
+          fi
+
+          # Cerebras
+          if [ -z "$CEREBRAS_API_KEY" ]; then
+            echo "⚠️ CEREBRAS_API_KEY is missing"
+          else
+            echo "✅ CEREBRAS_API_KEY is present"
+          fi
+
+          # Owner
           if [ -z "$OWNER_ID" ]; then
             echo "⚠️ OWNER_ID is missing"
           else
             echo "✅ OWNER_ID is present"
           fi
 
+          echo ""
+          echo "=========================================="
+          echo "SECRET CHECK COMPLETE"
+          echo "=========================================="
+
       # --------------------------------------------------
       # 6. Run Ayush Bot
       # --------------------------------------------------
       - name: Run Ayush Bot
         env:
+
+          # -----------------------------------------------
           # Telegram
+          # -----------------------------------------------
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
 
+          # -----------------------------------------------
           # Developer monitoring
+          # -----------------------------------------------
           DEVELOPER_GROUP_ID: ${{ secrets.DEVELOPER_GROUP_ID }}
 
+          # -----------------------------------------------
           # AI providers
+          # -----------------------------------------------
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
 
+          # -----------------------------------------------
           # Storage / statistics
+          # -----------------------------------------------
           GIST_ID: ${{ secrets.GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
 
+          # -----------------------------------------------
           # Owner / admin
+          # -----------------------------------------------
           OWNER_ID: ${{ secrets.OWNER_ID }}
           SUDO_USERS: ${{ secrets.SUDO_USERS }}
 
+          # -----------------------------------------------
           # Python
+          # -----------------------------------------------
           PYTHONUNBUFFERED: "1"
 
         run: |
