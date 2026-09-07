@@ -14,7 +14,7 @@
 <body class="dashboard-page">
 
     <!-- Animated wallpaper -->
-    <div class="wallpaper"></div>
+    <div id="wallpaper" class="wallpaper" style="background-image: url('{{ wallpaper.url }}');"></div>
     <div class="wallpaper-overlay"></div>
 
     <main class="dashboard-container">
@@ -390,15 +390,14 @@
 
 
 <script>
+let activityChart = null;
+let providerChart = null;
+let tokenChart = null;
+let currentWallpaperIndex = null;
 
-let activityChart;
-let providerChart;
-let tokenChart;
-
-
-/* -------------------------------------------------
+/* =========================================================
    CHART DEFAULTS
-------------------------------------------------- */
+   ========================================================= */
 
 Chart.defaults.font.family =
     "Inter, Segoe UI, Arial, sans-serif";
@@ -409,679 +408,341 @@ Chart.defaults.color =
 Chart.defaults.borderColor =
     "rgba(255,255,255,0.08)";
 
+/* =========================================================
+   HELPERS
+   ========================================================= */
 
-/* -------------------------------------------------
-   CREATE ACTIVITY CHART
-------------------------------------------------- */
+function number(value) {
+    const n = Number(value || 0);
+    return n.toLocaleString();
+}
+
+function safe(value) {
+    if (value === null || value === undefined || value === "") {
+        return "—";
+    }
+
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+
+function setText(id, value) {
+    const element = document.getElementById(id);
+
+    if (element) {
+        element.textContent = value;
+    }
+}
+
+/* =========================================================
+   ACTIVITY CHART
+   ========================================================= */
 
 function createActivityChart(labels, messages, aiReplies) {
+    const canvas = document.getElementById("activityChart");
 
-    const ctx =
-        document.getElementById("activityChart");
+    if (!canvas) {
+        return;
+    }
 
-    if (activityChart)
+    if (activityChart) {
         activityChart.destroy();
+    }
 
-    activityChart = new Chart(ctx, {
-
+    activityChart = new Chart(canvas, {
         type: "line",
 
         data: {
-
             labels: labels,
 
             datasets: [
-
                 {
                     label: "Messages",
                     data: messages,
-
                     tension: 0.4,
-
                     fill: true,
-
                     borderWidth: 2,
-
                     pointRadius: 2,
-
-                    pointHoverRadius: 5
+                    pointHoverRadius: 5,
                 },
 
                 {
                     label: "AI Replies",
                     data: aiReplies,
-
                     tension: 0.4,
-
                     fill: true,
-
                     borderWidth: 2,
-
                     pointRadius: 2,
-
-                    pointHoverRadius: 5
-                }
-
-            ]
+                    pointHoverRadius: 5,
+                },
+            ],
         },
 
         options: {
-
             responsive: true,
-
             maintainAspectRatio: false,
 
             interaction: {
                 intersect: false,
-                mode: "index"
+                mode: "index",
             },
 
             plugins: {
-
                 legend: {
                     position: "top",
-                    align: "end"
+                    align: "end",
                 },
 
                 tooltip: {
-                    enabled: true
-                }
-
+                    enabled: true,
+                },
             },
 
             scales: {
-
                 x: {
                     grid: {
-                        display: false
-                    }
+                        display: false,
+                    },
                 },
 
                 y: {
                     beginAtZero: true,
 
+                    ticks: {
+                        precision: 0,
+                    },
+
                     grid: {
-                        color:
-                            "rgba(255,255,255,0.07)"
-                    }
-                }
-
-            }
-        }
-
+                        color: "rgba(255,255,255,0.07)",
+                    },
+                },
+            },
+        },
     });
 }
 
-
-/* -------------------------------------------------
+/* =========================================================
    PROVIDER CHART
-------------------------------------------------- */
+   ========================================================= */
 
 function createProviderChart(labels, values) {
+    const canvas = document.getElementById("providerChart");
 
-    const ctx =
-        document.getElementById("providerChart");
+    if (!canvas) {
+        return;
+    }
 
-    if (providerChart)
+    if (providerChart) {
         providerChart.destroy();
+    }
 
-    providerChart = new Chart(ctx, {
-
+    providerChart = new Chart(canvas, {
         type: "doughnut",
 
         data: {
-
             labels: labels,
-
-            datasets: [{
-
-                data: values,
-
-                borderWidth: 0
-            }]
+            datasets: [
+                {
+                    data: values,
+                    borderWidth: 0,
+                },
+            ],
         },
 
         options: {
-
             responsive: true,
-
             maintainAspectRatio: false,
-
             cutout: "70%",
 
             plugins: {
-
                 legend: {
-                    position: "bottom"
-                }
-
-            }
-        }
-
+                    position: "bottom",
+                },
+            },
+        },
     });
 }
 
-
-/* -------------------------------------------------
+/* =========================================================
    TOKEN CHART
-------------------------------------------------- */
+   ========================================================= */
 
 function createTokenChart(input, output) {
+    const canvas = document.getElementById("tokenChart");
 
-    const ctx =
-        document.getElementById("tokenChart");
+    if (!canvas) {
+        return;
+    }
 
-    if (tokenChart)
+    if (tokenChart) {
         tokenChart.destroy();
+    }
 
-    tokenChart = new Chart(ctx, {
-
+    tokenChart = new Chart(canvas, {
         type: "bar",
 
         data: {
-
             labels: [
                 "Input",
-                "Output"
+                "Output",
             ],
 
-            datasets: [{
-
-                label: "Tokens",
-
-                data: [
-                    input,
-                    output
-                ],
-
-                borderRadius: 8,
-
-                borderWidth: 0
-            }]
-
+            datasets: [
+                {
+                    label: "Tokens",
+                    data: [
+                        input,
+                        output,
+                    ],
+                    borderRadius: 8,
+                    borderWidth: 0,
+                },
+            ],
         },
 
         options: {
-
             responsive: true,
-
             maintainAspectRatio: false,
 
             plugins: {
-
                 legend: {
-                    display: false
-                }
-
+                    display: false,
+                },
             },
 
             scales: {
-
                 x: {
                     grid: {
-                        display: false
-                    }
+                        display: false,
+                    },
                 },
 
                 y: {
-                    beginAtZero: true
-                }
+                    beginAtZero: true,
 
-            }
-
-        }
-
+                    ticks: {
+                        precision: 0,
+                    },
+                },
+            },
+        },
     });
 }
 
-
-/* -------------------------------------------------
-   HELPERS
-------------------------------------------------- */
-
-function number(value) {
-
-    return Number(value || 0)
-        .toLocaleString();
-}
-
-
-function safe(value) {
-
-    if (value === null ||
-        value === undefined ||
-        value === "") {
-
-        return "—";
-    }
-
-    return String(value);
-}
-
-
-/* -------------------------------------------------
-   LOAD DASHBOARD
-------------------------------------------------- */
-
-async function loadDashboard() {
-
-    try {
-
-        const response =
-            await fetch("/api/dashboard", {
-                credentials: "include"
-            });
-
-        if (!response.ok)
-            throw new Error("Dashboard API failed");
-
-        const data =
-            await response.json();
-
-
-        /* STATUS */
-
-        document.getElementById(
-            "connectionStatus"
-        ).textContent = "● Bot Online";
-
-
-        /* METRICS */
-
-        const stats =
-            data.stats || data;
-
-        document.getElementById(
-            "totalMessages"
-        ).textContent =
-            number(stats.total_messages);
-
-
-        document.getElementById(
-            "activeUsers"
-        ).textContent =
-            number(
-                stats.active_users ??
-                Object.keys(stats.users || {}).length
-            );
-
-
-        document.getElementById(
-            "messagesToday"
-        ).textContent =
-            number(stats.messages_today);
-
-
-        document.getElementById(
-            "aiReplies"
-        ).textContent =
-            number(stats.ai_replies);
-
-
-        document.getElementById(
-            "apiFailures"
-        ).textContent =
-            number(stats.api_failures);
-
-
-        const tokens =
-            stats.tokens || {};
-
-
-        const inputTokens =
-            Number(
-                tokens.input ??
-                stats.input_tokens ??
-                0
-            );
-
-
-        const outputTokens =
-            Number(
-                tokens.output ??
-                stats.output_tokens ??
-                0
-            );
-
-
-        const totalTokens =
-            Number(
-                tokens.total ??
-                stats.total_tokens ??
-                inputTokens + outputTokens
-            );
-
-
-        document.getElementById(
-            "totalTokens"
-        ).textContent =
-            number(totalTokens);
-
-
-        document.getElementById(
-            "inputTokens"
-        ).textContent =
-            number(inputTokens);
-
-
-        document.getElementById(
-            "outputTokens"
-        ).textContent =
-            number(outputTokens);
-
-
-        document.getElementById(
-            "summaryTotalTokens"
-        ).textContent =
-            number(totalTokens);
-
-
-        /* ACTIVITY */
-
-        const activity =
-            stats.activity ||
-            stats.activity_buckets ||
-            [];
-
-
-        let labels = [];
-        let messages = [];
-        let aiReplies = [];
-
-
-        if (Array.isArray(activity)) {
-
-            activity.forEach(item => {
-
-                labels.push(
-                    item.label ||
-                    item.time ||
-                    item.minute ||
-                    ""
-                );
-
-                messages.push(
-                    Number(item.messages || 0)
-                );
-
-                aiReplies.push(
-                    Number(item.ai_replies || 0)
-                );
-
-            });
-
-        }
-        else {
-
-            Object.entries(activity)
-                .forEach(([key, item]) => {
-
-                    labels.push(key);
-
-                    if (typeof item === "object") {
-
-                        messages.push(
-                            Number(item.messages || 0)
-                        );
-
-                        aiReplies.push(
-                            Number(item.ai_replies || 0)
-                        );
-
-                    }
-                    else {
-
-                        messages.push(
-                            Number(item || 0)
-                        );
-
-                        aiReplies.push(0);
-                    }
-
-                });
-        }
-
-
-        createActivityChart(
-            labels,
-            messages,
-            aiReplies
-        );
-
-
-        /* PROVIDERS */
-
-        const providers =
-            stats.provider_calls ||
-            stats.providers ||
-            {};
-
-
-        const providerLabels =
-            Object.keys(providers);
-
-
-        const providerValues =
-            providerLabels.map(name => {
-
-                const item =
-                    providers[name];
-
-                if (typeof item === "object")
-                    return Number(
-                        item.calls || 0
-                    );
-
-                return Number(item || 0);
-
-            });
-
-
-        createProviderChart(
-            providerLabels,
-            providerValues
-        );
-
-
-        /* TOKEN CHART */
-
-        createTokenChart(
-            inputTokens,
-            outputTokens
-        );
-
-
-        /* GROUPS */
-
-        renderGroups(
-            stats.groups || {}
-        );
-
-
-        /* USERS */
-
-        renderUsers(
-            stats.users || {}
-        );
-
-
-        /* PROVIDER TABLE */
-
-        renderProviders(
-            providers,
-            stats.provider_tokens || {}
-        );
-
-
-        /* LOGS */
-
-        renderLogs(
-            stats.logs ||
-            stats.recent_logs ||
-            stats.last_hour_logs ||
-            []
-        );
-
-
-        /* LAST UPDATE */
-
-        document.getElementById(
-            "lastUpdated"
-        ).textContent =
-            "Last update: " +
-            new Date().toLocaleTimeString();
-
-
-        /* SUDO */
-
-        if (
-            data.is_owner === true ||
-            data.role === "owner"
-        ) {
-
-            document.getElementById(
-                "sudoSection"
-            ).classList.remove("hidden");
-
-            renderSudo(
-                data.sudo_users ||
-                data.sudo_ids ||
-                []
-            );
-
-        }
-
-    }
-    catch (error) {
-
-        console.error(error);
-
-        document.getElementById(
-            "connectionStatus"
-        ).textContent =
-            "● Connection Error";
-    }
-}
-
-
-/* -------------------------------------------------
+/* =========================================================
    GROUP TABLE
-------------------------------------------------- */
+   ========================================================= */
 
 function renderGroups(groups) {
+    const tbody = document.getElementById("groupsTable");
 
-    const tbody =
-        document.getElementById("groupsTable");
+    if (!tbody) {
+        return;
+    }
 
-    const entries =
-        Array.isArray(groups)
-            ? groups.map(x => [x.id, x])
-            : Object.entries(groups);
-
+    const entries = Array.isArray(groups)
+        ? groups.map(x => [x.id, x])
+        : Object.entries(groups || {});
 
     if (!entries.length) {
-
-        tbody.innerHTML =
-            `<tr>
+        tbody.innerHTML = `
+            <tr>
                 <td colspan="3" class="empty">
                     No group activity yet
                 </td>
-            </tr>`;
+            </tr>
+        `;
 
         return;
     }
 
-
-    tbody.innerHTML =
-        entries
+    tbody.innerHTML = entries
+        .sort((a, b) => {
+            const am = Number(a[1]?.messages || 0);
+            const bm = Number(b[1]?.messages || 0);
+            return bm - am;
+        })
         .slice(0, 10)
         .map(([id, group]) => {
-
-            if (typeof group !== "object")
+            if (!group || typeof group !== "object") {
                 group = {
-                    messages: group
+                    messages: group,
                 };
-
+            }
 
             return `
                 <tr>
-
                     <td>
-                        ${safe(
-                            group.title ||
-                            group.name ||
-                            id
-                        )}
+                        ${safe(group.title || group.name || id)}
+                        <small class="table-sub">
+                            ${safe(group.type || "Telegram group")}
+                        </small>
                     </td>
 
                     <td>
-                        ${number(
-                            group.messages
-                        )}
+                        ${number(group.messages)}
                     </td>
 
                     <td>
-                        ${safe(
-                            group.last_active
-                        )}
+                        ${safe(group.last_active)}
                     </td>
-
                 </tr>
             `;
-
         })
         .join("");
 }
 
-
-/* -------------------------------------------------
+/* =========================================================
    USER TABLE
-------------------------------------------------- */
+   ========================================================= */
 
 function renderUsers(users) {
+    const tbody = document.getElementById("usersTable");
 
-    const tbody =
-        document.getElementById("usersTable");
+    if (!tbody) {
+        return;
+    }
 
-    const entries =
-        Array.isArray(users)
-            ? users.map(x => [x.id, x])
-            : Object.entries(users);
-
+    const entries = Array.isArray(users)
+        ? users.map(x => [x.id, x])
+        : Object.entries(users || {});
 
     if (!entries.length) {
-
-        tbody.innerHTML =
-            `<tr>
+        tbody.innerHTML = `
+            <tr>
                 <td colspan="3" class="empty">
                     No users tracked yet
                 </td>
-            </tr>`;
+            </tr>
+        `;
 
         return;
     }
 
-
-    tbody.innerHTML =
-        entries
+    tbody.innerHTML = entries
+        .sort((a, b) => {
+            const am = Number(a[1]?.messages || 0);
+            const bm = Number(b[1]?.messages || 0);
+            return bm - am;
+        })
         .slice(0, 15)
         .map(([id, user]) => {
-
-            if (typeof user !== "object")
+            if (!user || typeof user !== "object") {
                 user = {
-                    messages: user
+                    messages: user,
                 };
+            }
 
-
-            const username =
-                user.username
-                    ? "@" + user.username
-                    : "";
-
+            const username = user.username
+                ? "@" + user.username
+                : "";
 
             return `
                 <tr>
-
                     <td>
                         <strong>
                             ${safe(
@@ -1092,114 +753,91 @@ function renderUsers(users) {
                         </strong>
 
                         <small class="table-sub">
-                            ${username}
+                            ${safe(username)}
                         </small>
                     </td>
 
                     <td>
-                        ${number(
-                            user.messages
-                        )}
+                        ${number(user.messages)}
                     </td>
 
                     <td>
-                        ${safe(
-                            user.last_active
-                        )}
+                        ${safe(user.last_active)}
                     </td>
-
                 </tr>
             `;
-
         })
         .join("");
 }
 
-
-/* -------------------------------------------------
+/* =========================================================
    PROVIDER TABLE
-------------------------------------------------- */
+   ========================================================= */
 
-function renderProviders(
-    providers,
-    providerTokens
-) {
+function renderProviders(providers, providerTokens) {
+    const tbody = document.getElementById("providerTable");
 
-    const tbody =
-        document.getElementById(
-            "providerTable"
-        );
+    if (!tbody) {
+        return;
+    }
 
-
-    const names =
-        Object.keys(providers);
-
+    const names = Object.keys(providers || {});
 
     if (!names.length) {
-
-        tbody.innerHTML =
-            `<tr>
+        tbody.innerHTML = `
+            <tr>
                 <td colspan="5" class="empty">
                     No provider calls yet
                 </td>
-            </tr>`;
+            </tr>
+        `;
 
         return;
     }
 
-
-    tbody.innerHTML =
-        names.map(name => {
+    tbody.innerHTML = names
+        .map(name => {
+            const raw = providers[name];
 
             const item =
-                typeof providers[name] === "object"
-                    ? providers[name]
+                raw && typeof raw === "object"
+                    ? raw
                     : {
-                        calls: providers[name]
+                        calls: raw,
                     };
 
-
             const token =
-                providerTokens[name] || {};
+                providerTokens?.[name] || {};
 
+            const input = Number(
+                item.input_tokens ??
+                token.input ??
+                token.input_tokens ??
+                0
+            );
 
-            const input =
-                Number(
-                    item.input_tokens ??
-                    token.input ??
-                    0
-                );
+            const output = Number(
+                item.output_tokens ??
+                token.output ??
+                token.output_tokens ??
+                0
+            );
 
-
-            const output =
-                Number(
-                    item.output_tokens ??
-                    token.output ??
-                    0
-                );
-
-
-            const total =
-                Number(
-                    item.total_tokens ??
-                    token.total ??
-                    input + output
-                );
-
+            const total = Number(
+                item.total_tokens ??
+                token.total ??
+                token.total_tokens ??
+                input + output
+            );
 
             return `
                 <tr>
-
                     <td>
-                        <strong>
-                            ${safe(name)}
-                        </strong>
+                        <strong>${safe(name)}</strong>
                     </td>
 
                     <td>
-                        ${number(
-                            item.calls || 0
-                        )}
+                        ${number(item.calls || 0)}
                     </td>
 
                     <td>
@@ -1213,48 +851,45 @@ function renderProviders(
                     <td>
                         ${number(total)}
                     </td>
-
                 </tr>
             `;
-
-        }).join("");
+        })
+        .join("");
 }
 
-
-/* -------------------------------------------------
+/* =========================================================
    LOGS
-------------------------------------------------- */
+   ========================================================= */
 
 function renderLogs(logs) {
-
     const container =
-        document.getElementById(
-            "logsContainer"
-        );
+        document.getElementById("logsContainer");
 
+    if (!container) {
+        return;
+    }
 
-    if (!Array.isArray(logs) ||
-        !logs.length) {
-
-        container.innerHTML =
-            `<div class="log-item">
+    if (!Array.isArray(logs) || !logs.length) {
+        container.innerHTML = `
+            <div class="log-item">
+                <span class="log-time">—</span>
                 <span class="log-message">
                     No recent events
                 </span>
-            </div>`;
+            </div>
+        `;
 
         return;
     }
 
-
-    container.innerHTML =
-        logs.slice(-30).reverse()
+    container.innerHTML = logs
+        .slice(-30)
+        .reverse()
         .map(log => {
-
             if (typeof log === "string") {
-
                 return `
                     <div class="log-item">
+                        <span class="log-time">—</span>
                         <span class="log-message">
                             ${safe(log)}
                         </span>
@@ -1262,10 +897,8 @@ function renderLogs(logs) {
                 `;
             }
 
-
             return `
                 <div class="log-item">
-
                     <span class="log-time">
                         ${safe(
                             log.time ||
@@ -1281,162 +914,555 @@ function renderLogs(logs) {
                             log.type
                         )}
                     </span>
-
                 </div>
             `;
-
         })
         .join("");
 }
 
-
-/* -------------------------------------------------
+/* =========================================================
    SUDO
-------------------------------------------------- */
+   ========================================================= */
 
 function renderSudo(ids) {
-
     const tbody =
-        document.getElementById(
-            "sudoTable"
-        );
+        document.getElementById("sudoTable");
 
+    if (!tbody) {
+        return;
+    }
 
-    if (!Array.isArray(ids) ||
-        !ids.length) {
-
-        tbody.innerHTML =
-            `<tr>
+    if (!Array.isArray(ids) || !ids.length) {
+        tbody.innerHTML = `
+            <tr>
                 <td colspan="2" class="empty">
                     No sudo users
                 </td>
-            </tr>`;
+            </tr>
+        `;
 
         return;
     }
 
-
-    tbody.innerHTML =
-        ids.map(id => {
-
+    tbody.innerHTML = ids
+        .map(id => {
             return `
                 <tr>
+                    <td>${safe(id)}</td>
 
                     <td>
-                        ${safe(id)}
-                    </td>
-
-                    <td>
-
                         <button
+                            type="button"
                             class="danger-small"
-                            onclick="removeSudo('${id}')">
-
+                            onclick="removeSudo(${JSON.stringify(String(id))})"
+                        >
                             Remove
-
                         </button>
-
                     </td>
-
                 </tr>
             `;
-
-        }).join("");
+        })
+        .join("");
 }
-
-
-/* -------------------------------------------------
-   ADD SUDO
-------------------------------------------------- */
 
 async function addSudo() {
-
     const input =
-        document.getElementById(
-            "sudoId"
+        document.getElementById("sudoId");
+
+    if (!input) {
+        return;
+    }
+
+    const id = input.value.trim();
+
+    if (!/^\d+$/.test(id)) {
+        alert("Enter a valid numeric Telegram ID.");
+        return;
+    }
+
+    try {
+        const body = new URLSearchParams();
+        body.set("telegram_id", id);
+
+        const response = await fetch(
+            "/api/sudo/add",
+            {
+                method: "POST",
+                credentials: "include",
+                headers: {
+                    "Content-Type":
+                        "application/x-www-form-urlencoded;charset=UTF-8",
+                },
+                body: body.toString(),
+            }
         );
 
-    const id =
-        input.value.trim();
+        const result = await response.json().catch(() => ({}));
 
-
-    if (!id)
-        return;
-
-
-    await fetch(
-        "/api/sudo/add",
-        {
-
-            method: "POST",
-
-            headers: {
-                "Content-Type":
-                    "application/json"
-            },
-
-            credentials: "include",
-
-            body: JSON.stringify({
-                user_id: Number(id)
-            })
+        if (!response.ok) {
+            throw new Error(
+                result.detail ||
+                result.error ||
+                "Unable to add sudo user."
+            );
         }
-    );
 
+        input.value = "";
 
-    input.value = "";
+        await loadDashboard();
 
-    loadDashboard();
+        alert("Sudo user added successfully.");
+    } catch (error) {
+        console.error(error);
+        alert(error.message || "Failed to add sudo user.");
+    }
 }
-
-
-/* -------------------------------------------------
-   REMOVE SUDO
-------------------------------------------------- */
 
 async function removeSudo(id) {
-
-    if (!confirm(
-        "Remove this sudo user?"
-    ))
+    if (!confirm("Remove this sudo user?")) {
         return;
+    }
 
+    try {
+        const body = new URLSearchParams();
+        body.set("telegram_id", String(id));
 
-    await fetch(
-        "/api/sudo/remove",
-        {
+        const response = await fetch(
+            "/api/sudo/remove",
+            {
+                method: "POST",
+                credentials: "include",
+                headers: {
+                    "Content-Type":
+                        "application/x-www-form-urlencoded;charset=UTF-8",
+                },
+                body: body.toString(),
+            }
+        );
 
-            method: "POST",
+        const result = await response.json().catch(() => ({}));
 
-            headers: {
-                "Content-Type":
-                    "application/json"
-            },
-
-            credentials: "include",
-
-            body: JSON.stringify({
-                user_id: Number(id)
-            })
+        if (!response.ok) {
+            throw new Error(
+                result.detail ||
+                result.error ||
+                "Unable to remove sudo user."
+            );
         }
-    );
 
+        await loadDashboard();
 
-    loadDashboard();
+        alert("Sudo user removed successfully.");
+    } catch (error) {
+        console.error(error);
+        alert(error.message || "Failed to remove sudo user.");
+    }
 }
 
+/* =========================================================
+   SERVER-SYNCHRONISED WALLPAPER
+   ========================================================= */
 
-/* -------------------------------------------------
-   LIVE REFRESH
-------------------------------------------------- */
+async function syncWallpaper() {
+    const wallpaper =
+        document.getElementById("wallpaper");
 
-loadDashboard();
+    if (!wallpaper) {
+        return;
+    }
 
-setInterval(
-    loadDashboard,
-    30000
+    try {
+        const response = await fetch(
+            "/api/wallpaper",
+            {
+                credentials: "include",
+                cache: "no-store",
+            }
+        );
+
+        if (!response.ok) {
+            throw new Error("Wallpaper API failed");
+        }
+
+        const data = await response.json();
+
+        if (!data || !data.url) {
+            return;
+        }
+
+        if (
+            currentWallpaperIndex !== null &&
+            currentWallpaperIndex === data.index
+        ) {
+            return;
+        }
+
+        const firstLoad =
+            currentWallpaperIndex === null;
+
+        if (firstLoad) {
+            wallpaper.style.backgroundImage =
+                `url("${data.url}")`;
+
+            currentWallpaperIndex = data.index;
+            return;
+        }
+
+        wallpaper.classList.add(
+            "wallpaper-changing"
+        );
+
+        window.setTimeout(() => {
+            wallpaper.style.backgroundImage =
+                `url("${data.url}")`;
+
+            currentWallpaperIndex =
+                data.index;
+
+            window.setTimeout(() => {
+                wallpaper.classList.remove(
+                    "wallpaper-changing"
+                );
+            }, 120);
+        }, 850);
+
+    } catch (error) {
+        console.warn(
+            "Wallpaper sync failed:",
+            error
+        );
+    }
+}
+
+/* =========================================================
+   LOAD DASHBOARD
+   ========================================================= */
+
+async function loadDashboard() {
+    try {
+        const response = await fetch(
+            "/api/dashboard",
+            {
+                credentials: "include",
+                cache: "no-store",
+            }
+        );
+
+        if (response.status === 401 ||
+            response.status === 403) {
+            window.location.href = "/login";
+            return;
+        }
+
+        if (!response.ok) {
+            throw new Error(
+                `Dashboard API failed (${response.status})`
+            );
+        }
+
+        const data =
+            await response.json();
+
+        setText(
+            "connectionStatus",
+            "● Bot Online"
+        );
+
+        const stats =
+            data.stats || data || {};
+
+        /* METRICS */
+
+        setText(
+            "totalMessages",
+            number(stats.total_messages)
+        );
+
+        setText(
+            "activeUsers",
+            number(
+                stats.active_users ??
+                Object.keys(stats.users || {}).length
+            )
+        );
+
+        setText(
+            "messagesToday",
+            number(stats.messages_today)
+        );
+
+        setText(
+            "aiReplies",
+            number(stats.ai_replies)
+        );
+
+        setText(
+            "apiFailures",
+            number(stats.api_failures)
+        );
+
+        const tokens =
+            stats.tokens || {};
+
+        const inputTokens = Number(
+            tokens.input ??
+            tokens.input_tokens ??
+            stats.input_tokens ??
+            0
+        );
+
+        const outputTokens = Number(
+            tokens.output ??
+            tokens.output_tokens ??
+            stats.output_tokens ??
+            0
+        );
+
+        const totalTokens = Number(
+            tokens.total ??
+            tokens.total_tokens ??
+            stats.total_tokens ??
+            inputTokens + outputTokens
+        );
+
+        setText(
+            "totalTokens",
+            number(totalTokens)
+        );
+
+        setText(
+            "inputTokens",
+            number(inputTokens)
+        );
+
+        setText(
+            "outputTokens",
+            number(outputTokens)
+        );
+
+        setText(
+            "summaryTotalTokens",
+            number(totalTokens)
+        );
+
+        /* ACTIVITY */
+
+        const activity =
+            stats.activity ||
+            stats.activity_buckets ||
+            [];
+
+        const labels = [];
+        const messages = [];
+        const aiReplies = [];
+
+        if (Array.isArray(activity)) {
+            activity.forEach(item => {
+                labels.push(
+                    item.label ||
+                    item.time ||
+                    item.minute ||
+                    ""
+                );
+
+                messages.push(
+                    Number(item.messages || 0)
+                );
+
+                aiReplies.push(
+                    Number(item.ai_replies || 0)
+                );
+            });
+        } else {
+            Object.entries(activity || {})
+                .forEach(([key, item]) => {
+                    labels.push(key);
+
+                    if (
+                        item &&
+                        typeof item === "object"
+                    ) {
+                        messages.push(
+                            Number(item.messages || 0)
+                        );
+
+                        aiReplies.push(
+                            Number(item.ai_replies || 0)
+                        );
+                    } else {
+                        messages.push(
+                            Number(item || 0)
+                        );
+
+                        aiReplies.push(0);
+                    }
+                });
+        }
+
+        createActivityChart(
+            labels,
+            messages,
+            aiReplies
+        );
+
+        /* PROVIDERS */
+
+        const providers =
+            stats.provider_calls ||
+            stats.providers ||
+            {};
+
+        const providerLabels =
+            Object.keys(providers);
+
+        const providerValues =
+            providerLabels.map(name => {
+                const item =
+                    providers[name];
+
+                if (
+                    item &&
+                    typeof item === "object"
+                ) {
+                    return Number(
+                        item.calls || 0
+                    );
+                }
+
+                return Number(item || 0);
+            });
+
+        createProviderChart(
+            providerLabels,
+            providerValues
+        );
+
+        /* TOKEN CHART */
+
+        createTokenChart(
+            inputTokens,
+            outputTokens
+        );
+
+        /* TABLES */
+
+        renderGroups(
+            stats.groups || {}
+        );
+
+        renderUsers(
+            stats.users || {}
+        );
+
+        renderProviders(
+            providers,
+            stats.provider_tokens || {}
+        );
+
+        renderLogs(
+            stats.logs ||
+            stats.recent_logs ||
+            stats.last_hour_logs ||
+            []
+        );
+
+        /* SERVER TIME */
+
+        const serverTime =
+            data.server_time;
+
+        setText(
+            "lastUpdated",
+            "Last update: " +
+            (
+                serverTime
+                    ? new Date(serverTime)
+                        .toLocaleTimeString()
+                    : new Date()
+                        .toLocaleTimeString()
+            )
+        );
+
+        /* WALLPAPER */
+
+        if (data.wallpaper?.url) {
+            const wallpaper =
+                document.getElementById(
+                    "wallpaper"
+                );
+
+            if (wallpaper) {
+                wallpaper.style.backgroundImage =
+                    `url("${data.wallpaper.url}")`;
+
+                currentWallpaperIndex =
+                    data.wallpaper.index;
+            }
+        }
+
+        /* OWNER-ONLY SUDO MANAGEMENT */
+
+        const sudoSection =
+            document.getElementById(
+                "sudoSection"
+            );
+
+        const isOwner =
+            data.is_owner === true ||
+            data.role === "owner";
+
+        if (isOwner) {
+            sudoSection?.classList.remove(
+                "hidden"
+            );
+
+            renderSudo(
+                data.sudo_users ||
+                data.sudo_ids ||
+                []
+            );
+        } else {
+            sudoSection?.classList.add(
+                "hidden"
+            );
+        }
+
+    } catch (error) {
+        console.error(error);
+
+        setText(
+            "connectionStatus",
+            "● Connection Error"
+        );
+    }
+}
+
+/* =========================================================
+   START
+   ========================================================= */
+
+document.addEventListener(
+    "DOMContentLoaded",
+    async () => {
+        await syncWallpaper();
+        await loadDashboard();
+
+        /*
+         * Dashboard data refreshes every 30 seconds.
+         * Wallpaper checks every 60 seconds, while the
+         * server decides which image is active.
+         */
+        window.setInterval(
+            loadDashboard,
+            30000
+        );
+
+        window.setInterval(
+            syncWallpaper,
+            60000
+        );
+    }
 );
-
 </script>
 
 </body>
