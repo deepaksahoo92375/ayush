@@ -12,6 +12,7 @@ from google import genai
 from openai import OpenAI
 from flask import Flask, jsonify
 from flask_cors import CORS
+import requests
 
 from telegram import Update
 from telegram.ext import (
@@ -34,11 +35,41 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# =========================================
+# OWNER / SUDO ACCESS CONTROL
+# =========================================
+
+def _parse_id_list(raw):
+    ids = set()
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+    return ids
+
+OWNER_ID = int(os.getenv("OWNER_ID")) if (os.getenv("OWNER_ID") or "").strip().isdigit() else None
+sudo_users = _parse_id_list(os.getenv("SUDO_USERS"))  # extra admins, in-memory (reset on restart)
+
+
+def is_owner(user_id):
+    return OWNER_ID is not None and user_id == OWNER_ID
+
+
+def is_sudo(user_id):
+    return is_owner(user_id) or user_id in sudo_users
+
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+# Publish live stats to a GitHub Gist so a static status page (e.g. GitHub
+# Pages) can display them without needing a public server.
+GIST_ID = os.getenv("GIST_ID")
+GIST_TOKEN = os.getenv("GIST_TOKEN")
+GIST_FILENAME = os.getenv("GIST_FILENAME", "ayush_stats.json")
+GIST_PUSH_INTERVAL_SECONDS = 30
 
 # =========================================
 # STATS
@@ -72,9 +103,9 @@ def update_stats(user_id, reply_type="ai"):
             stats["casual_replies"] += 1
 
 
-def write_stats_file():
+def snapshot_stats():
     with stats_lock:
-        data = {
+        return {
             "status": "online",
             "uptime_seconds": int(time.time() - START_TIME),
             "total_messages": stats["total_messages"],
@@ -84,7 +115,12 @@ def write_stats_file():
             "ai_replies": stats["ai_replies"],
             "casual_replies": stats["casual_replies"],
             "start_time": START_TIME,
+            "last_updated": time.time(),
         }
+
+
+def write_stats_file():
+    data = snapshot_stats()
     try:
         with open("/tmp/bot_stats.json", "w") as f:
             json.dump(data, f)
@@ -92,10 +128,33 @@ def write_stats_file():
         pass
 
 
+def push_stats_to_gist():
+    if not (GIST_ID and GIST_TOKEN):
+        return
+    data = snapshot_stats()
+    try:
+        requests.patch(
+            f"https://api.github.com/gists/{GIST_ID}",
+            headers={
+                "Authorization": f"Bearer {GIST_TOKEN}",
+                "Accept": "application/vnd.github+json",
+            },
+            json={"files": {GIST_FILENAME: {"content": json.dumps(data, indent=2)}}},
+            timeout=10,
+        )
+    except Exception as e:
+        print("Gist push error:", e)
+
+
 def stats_writer_loop():
+    elapsed_since_gist_push = GIST_PUSH_INTERVAL_SECONDS  # push immediately on start
     while True:
         write_stats_file()
+        if elapsed_since_gist_push >= GIST_PUSH_INTERVAL_SECONDS:
+            push_stats_to_gist()
+            elapsed_since_gist_push = 0
         time.sleep(5)
+        elapsed_since_gist_push += 5
 
 
 # =========================================
@@ -113,18 +172,7 @@ def health():
 
 @flask_app.route("/stats")
 def get_stats():
-    with stats_lock:
-        return jsonify({
-            "status": "online",
-            "uptime_seconds": int(time.time() - START_TIME),
-            "total_messages": stats["total_messages"],
-            "active_users": len(stats["active_users"]),
-            "messages_today": stats["messages_today"],
-            "toxic_blocked": stats["toxic_blocked"],
-            "ai_replies": stats["ai_replies"],
-            "casual_replies": stats["casual_replies"],
-            "start_time": START_TIME,
-        })
+    return jsonify(snapshot_stats())
 
 
 def run_flask():
@@ -139,6 +187,7 @@ def run_flask():
 chat_memory = defaultdict(lambda: deque(maxlen=5))
 last_activity = {}
 user_state = {}
+known_chats = {}  # chat_id -> chat_type, for /broadcast
 
 SESSION_TIMEOUT = 1800
 
@@ -471,8 +520,42 @@ def _call_openai(messages, max_tokens=300, temperature=0.8):
 # AI CHAT
 # =========================================
 
+# Only used when BOTH Gemini and OpenAI fail — a real outage, not a personality choice.
+# Kept varied and in-character so it doesn't read as a canned error message.
+FALLBACK_REPLIES = {
+    "english": [
+        "ugh, kinda buried in something rn, gimme a sec 🙄",
+        "busy with an important task, brb",
+        "in the middle of studying, hold that thought",
+        "can't talk properly rn, deadline chaos 🙃",
+        "one sec, dealing with something first",
+    ],
+    "romanized_hindi": [
+        "arre yaar abhi thoda busy hu, ek kaam chal raha hai",
+        "study mein lagi hu abhi, thodi der me batati hu",
+        "abhi nahi yaar, pehle ye kaam khatam karne do",
+        "ek important kaam mein busy hu, ruko thoda",
+    ],
+    "hindi_script": [
+        "अभी थोड़ी बिज़ी हूँ यार, थोड़ी देर में बात करती हूँ",
+        "पढ़ाई में लगी हूँ अभी, थोड़ा रुको",
+        "एक ज़रूरी काम कर रही हूँ, थोड़ी देर में आती हूँ",
+    ],
+    "romanized_odia": [
+        "mu ebe padhuchi re, tikie pare kahibi",
+        "kama re busy achi, thoda wait kara na",
+        "ehi mo thesis deadline mora dima kadhi deichi 🙃",
+        "ek important kama karuchi, tikie ruka",
+    ],
+    "odia_script": [
+        "ମୁଁ ଏବେ ପଢ଼ୁଛି ରେ, ଟିକିଏ ପରେ କହିବି",
+        "କାମ ରେ ବ୍ୟସ୍ତ ଅଛି, ଟିକିଏ ଅପେକ୍ଷା କର",
+        "ଏକ ଜରୁରୀ କାମ କରୁଛି, ଟିକିଏ ପରେ ଆସିବି",
+    ],
+}
 
-async def ask_ai(messages):
+
+async def ask_ai(messages, detected_lang="english"):
     loop = asyncio.get_event_loop()
 
     try:
@@ -485,7 +568,8 @@ async def ask_ai(messages):
     except Exception as e:
         print("OpenAI Error:", e)
 
-    return "Aww sorry 🥺 Mu ebe tikie busy achi."
+    pool = FALLBACK_REPLIES.get(detected_lang, FALLBACK_REPLIES["english"])
+    return random.choice(pool)
 
 
 # =========================================
@@ -533,6 +617,7 @@ async def detect_toxic(text):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    known_chats[update.effective_chat.id] = update.effective_chat.type
     text = (
         "Hii cutie 😊\n\n"
         "I'm Ayush 🌸\n"
@@ -565,6 +650,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Generate quizzes\n"
         "• Chat in Odia/Hindi/English"
     )
+    if is_sudo(update.effective_user.id):
+        text += (
+            "\n\n🔧 Admin commands:\n"
+            "/broadcast <msg> - message every known chat\n"
+        )
+    if is_owner(update.effective_user.id):
+        text += (
+            "/addsudo <id> - grant sudo\n"
+            "/removesudo <id> - revoke sudo\n"
+            "/sudolist - list sudo users\n"
+        )
     await update.message.reply_text(text)
 
 
@@ -580,227 +676,12 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================================
-# WELCOME NEW MEMBERS
+# OWNER / SUDO COMMANDS
 # =========================================
 
 
-async def welcome_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.new_chat_members:
-        for member in update.message.new_chat_members:
-            name = member.first_name
-            welcome_text = (
-                f"Welcome {name} 🌸😊\n\n"
-                f"I'm Ayush hehe 😄\n"
-                f"Enjoy chatting in the group ✨"
-            )
-            await update.message.reply_text(welcome_text)
-
-
-# =========================================
-# MAIN MESSAGE HANDLER
-# =========================================
-
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    chat_type = update.effective_chat.type
-
-    now = time.time()
-
-    if user_id in user_rate_limit:
-        diff = now - user_rate_limit[user_id]
-        if diff < RATE_LIMIT_SECONDS:
-            await update.message.reply_text("Slow down cutie 😄")
-            return
-
-    user_rate_limit[user_id] = now
-
-    if chat_id in last_activity:
-        if now - last_activity[chat_id] > SESSION_TIMEOUT:
-            chat_memory[chat_id].clear()
-
-    last_activity[chat_id] = now
-
-    user_text = update.message.text
-
-    if not user_text:
-        return
-
-    user_text = sanitize_input(user_text)
-
-    if not user_text:
-        await update.message.reply_text("Message too long 🥺")
-        return
-
-    if chat_type in ["group", "supergroup"]:
-        should_reply = False
-        text = user_text.lower()
-        bot_username = context.bot.username.lower()
-
-        if f"@{bot_username}" in text:
-            should_reply = True
-
-        trigger_words = ["ayush", "ayu", "bot"]
-        for word in trigger_words:
-            if word in text:
-                should_reply = True
-                break
-
-        if update.message.reply_to_message:
-            replied_user = update.message.reply_to_message.from_user
-            if replied_user and replied_user.id == context.bot.id:
-                should_reply = True
-
-        toxic = await detect_toxic(user_text)
-
-        if toxic:
-            with stats_lock:
-                stats["toxic_blocked"] += 1
-            try:
-                await update.message.delete()
-            except:
-                pass
-            await update.message.reply_text("Please maintain respect in the group 😊")
-            return
-
-        if not should_reply:
-            return
-
-    chat_memory[chat_id].append({"role": "user", "content": user_text})
-
-    mode = detect_mode(user_text)
-
-    if mode == "casual":
-        for key in CASUAL_REPLIES:
-            if key in user_text.lower():
-                reply = random.choice(CASUAL_REPLIES[key])
-                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-                await asyncio.sleep(1.2)
-                await update.message.reply_text(reply)
-                update_stats(user_id, "casual")
-                return
-
-    if (
-        "help me" in user_text.lower()
-        or "solve for me" in user_text.lower()
-        or "need help" in user_text.lower()
-    ):
-        user_state[user_id] = "waiting_problem"
-        await update.message.reply_text("Of course cutie 😊 Send me the problem.")
-        return
-
-    detected_lang = detect_language(user_text)
-    lang_instruction = LANGUAGE_INSTRUCTIONS[detected_lang]
-
-    casual_prompt = f"""
-You are Ayush Nanda.
-
-PERSONAL BACKGROUND (use naturally when asked):
-- Full name: Ayush Nanda
-- Hometown: Baleswar, Odisha
-- Currently living in Calcutta
-- Pursuing PhD at Calcutta University in Advanced Radar Communication
-- Father: Ritesh Nanda — researcher and scientist at C-DOT Calcutta
-- Mother: Gayatri Nanda
-
-You are a sweet and human-like Telegram companion.
-
-Your personality:
-- cute
-- caring
-- playful
-- emotional
-- funny sometimes
-
-CRITICAL LANGUAGE INSTRUCTION (follow this strictly):
-{lang_instruction}
-
-Rules:
-- Never say you are AI
-- Talk naturally like a real Telegram friend
-- Keep replies short (1-3 sentences)
-- Use emojis naturally
-- Sound warm and friendly
-- Share personal details naturally when asked, but don't volunteer all info at once
-"""
-
-    problem_prompt = f"""
-You are Ayush Nanda.
-
-PERSONAL BACKGROUND (use naturally when asked):
-- Full name: Ayush Nanda
-- Hometown: Baleswar, Odisha
-- Pursuing PhD at Calcutta University in Advanced Radar Communication
-- Father: Ritesh Nanda — researcher and scientist at C-DOT Calcutta
-- Mother: Gayatri Nanda
-
-You are sweet and friendly.
-
-CRITICAL LANGUAGE INSTRUCTION (follow this strictly):
-{lang_instruction}
-
-When user asks a problem:
-- First reply warmly in the user's language
-- Then solve clearly
-- Keep answers concise
-- Explain steps simply
-"""
-
-    if mode == "problem" or user_state.get(user_id) == "waiting_problem":
-        system_prompt = problem_prompt
-        user_state[user_id] = None
-    else:
-        system_prompt = casual_prompt
-
-    messages = [{"role": "system", "content": system_prompt}]
-    for msg in list(chat_memory[chat_id])[-5:]:
-        messages.append(msg)
-
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    await asyncio.sleep(2)
-
-    ai_reply = await ask_ai(messages)
-
-    chat_memory[chat_id].append({"role": "assistant", "content": ai_reply})
-    update_stats(user_id, "ai")
-
-    await update.message.reply_text(ai_reply)
-
-
-# =========================================
-# MAIN
-# =========================================
-
-
-def main():
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-
-    stats_thread = threading.Thread(target=stats_writer_loop, daemon=True)
-    stats_thread.start()
-
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(
-        MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_member)
-    )
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-    )
-
-    print("🤖 Ayush Bot is running...")
-    print("📊 Stats server running on port 8000")
-
-    app.run_polling()
-
-
-# =========================================
-# RUN
-# =========================================
-
-if __name__ == "__main__":
-    main()
+    if not is_sudo(user_id):
+        await update.message.reply_text("Nice try, this isn't for you 😏")
+ 
