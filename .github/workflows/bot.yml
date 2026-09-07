@@ -18,11 +18,12 @@ jobs:
     name: Run Ayush Bot
     runs-on: ubuntu-latest
 
-    # GitHub-hosted runners have a maximum job duration.
-    # 330 minutes gives the bot enough time before the next scheduled run.
+    # GitHub-hosted runner maximum is 6 hours.
+    # 330 minutes = 5 hours 30 minutes.
     timeout-minutes: 330
 
     steps:
+
       # =====================================================
       # CHECKOUT
       # =====================================================
@@ -36,7 +37,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
 
       # =====================================================
       # INSTALL DEPENDENCIES
@@ -47,7 +48,7 @@ jobs:
           python -m pip install -r requirements.txt
 
       # =====================================================
-      # VERIFY BOT FILE
+      # VERIFY BOT
       # =====================================================
       - name: Verify bot.py
         run: |
@@ -55,10 +56,10 @@ jobs:
           echo "CHECKING AYUSH BOT"
           echo "=========================================="
 
-          if [ ! -f bot.py ]; then
+          test -f bot.py || {
             echo "❌ bot.py not found"
             exit 1
-          fi
+          }
 
           echo "✅ bot.py found"
 
@@ -71,15 +72,10 @@ jobs:
           python --version
 
           echo ""
-          echo "Last 40 lines of bot.py:"
-          tail -n 40 bot.py
-
-          echo ""
           echo "Running syntax check..."
 
           python -m py_compile bot.py
 
-          echo ""
           echo "✅ bot.py syntax is valid."
 
       # =====================================================
@@ -89,6 +85,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           DEVELOPER_GROUP_ID: ${{ secrets.DEVELOPER_GROUP_ID }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
 
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -99,98 +96,76 @@ jobs:
           GIST_ID: ${{ secrets.GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
 
-          OWNER_ID: ${{ secrets.OWNER_ID }}
-          SUDO_USERS: ${{ secrets.SUDO_USERS }}
-
         run: |
           echo "=========================================="
           echo "CHECKING AYUSH BOT SECRETS"
           echo "=========================================="
 
-          # -------------------------------------------------
-          # TELEGRAM BOT
-          # -------------------------------------------------
+          # Required Telegram configuration
           if [ -z "$BOT_TOKEN" ]; then
             echo "❌ BOT_TOKEN is missing"
             exit 1
-          else
-            echo "✅ BOT_TOKEN is present"
           fi
+          echo "✅ BOT_TOKEN is present"
 
-          # -------------------------------------------------
-          # DEVELOPER GROUP
-          # -------------------------------------------------
           if [ -z "$DEVELOPER_GROUP_ID" ]; then
             echo "❌ DEVELOPER_GROUP_ID is missing"
             exit 1
-          else
-            echo "✅ DEVELOPER_GROUP_ID is present"
           fi
+          echo "✅ DEVELOPER_GROUP_ID is present"
 
-          # -------------------------------------------------
-          # AI PROVIDERS
-          # -------------------------------------------------
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "⚠️ GEMINI_API_KEY is missing"
-          else
-            echo "✅ GEMINI_API_KEY is present"
-          fi
-
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "⚠️ OPENAI_API_KEY is missing"
-          else
-            echo "✅ OPENAI_API_KEY is present"
-          fi
-
-          if [ -z "$GROQ_API_KEY" ]; then
-            echo "⚠️ GROQ_API_KEY is missing"
-          else
-            echo "✅ GROQ_API_KEY is present"
-          fi
-
-          if [ -z "$OPENROUTER_API_KEY" ]; then
-            echo "⚠️ OPENROUTER_API_KEY is missing"
-          else
-            echo "✅ OPENROUTER_API_KEY is present"
-          fi
-
-          if [ -z "$CEREBRAS_API_KEY" ]; then
-            echo "⚠️ CEREBRAS_API_KEY is missing"
-          else
-            echo "✅ CEREBRAS_API_KEY is present"
-          fi
-
-          # -------------------------------------------------
-          # GITHUB GIST
-          # -------------------------------------------------
-          if [ -z "$GIST_ID" ]; then
-            echo "⚠️ GIST_ID is missing"
-          else
-            echo "✅ GIST_ID is present"
-          fi
-
-          if [ -z "$GIST_TOKEN" ]; then
-            echo "⚠️ GIST_TOKEN is missing"
-          else
-            echo "✅ GIST_TOKEN is present"
-          fi
-
-          # -------------------------------------------------
-          # OWNER
-          # -------------------------------------------------
           if [ -z "$OWNER_ID" ]; then
-            echo "⚠️ OWNER_ID is missing"
+            echo "❌ OWNER_ID is missing"
+            exit 1
+          fi
+          echo "✅ OWNER_ID is present"
+
+          echo ""
+          echo "AI PROVIDERS:"
+
+          if [ -n "$GEMINI_API_KEY" ]; then
+            echo "✅ Gemini API key present"
           else
-            echo "✅ OWNER_ID is present"
+            echo "⚠️ Gemini API key missing"
           fi
 
-          # -------------------------------------------------
-          # SUDO USERS
-          # -------------------------------------------------
-          if [ -z "$SUDO_USERS" ]; then
-            echo "⚠️ SUDO_USERS is missing"
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "✅ OpenAI API key present"
           else
-            echo "✅ SUDO_USERS is present"
+            echo "⚠️ OpenAI API key missing"
+          fi
+
+          if [ -n "$GROQ_API_KEY" ]; then
+            echo "✅ Groq API key present"
+          else
+            echo "⚠️ Groq API key missing"
+          fi
+
+          if [ -n "$OPENROUTER_API_KEY" ]; then
+            echo "✅ OpenRouter API key present"
+          else
+            echo "⚠️ OpenRouter API key missing"
+          fi
+
+          if [ -n "$CEREBRAS_API_KEY" ]; then
+            echo "✅ Cerebras API key present"
+          else
+            echo "⚠️ Cerebras API key missing"
+          fi
+
+          echo ""
+          echo "GIST:"
+
+          if [ -n "$GIST_ID" ]; then
+            echo "✅ GIST_ID present"
+          else
+            echo "⚠️ GIST_ID missing"
+          fi
+
+          if [ -n "$GIST_TOKEN" ]; then
+            echo "✅ GIST_TOKEN present"
+          else
+            echo "⚠️ GIST_TOKEN missing"
           fi
 
           echo ""
@@ -203,11 +178,14 @@ jobs:
       # =====================================================
       - name: Run Ayush Bot
         env:
+
           # -------------------------------------------------
           # TELEGRAM
           # -------------------------------------------------
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           DEVELOPER_GROUP_ID: ${{ secrets.DEVELOPER_GROUP_ID }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          SUDO_USERS: ${{ secrets.SUDO_USERS }}
 
           # -------------------------------------------------
           # AI PROVIDERS
@@ -219,32 +197,23 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
 
           # -------------------------------------------------
-          # GITHUB GIST
+          # AI MODELS
+          # -------------------------------------------------
+          # These are intentionally set directly instead of
+          # depending on possibly-empty GitHub secrets.
+
+          GEMINI_MODEL: "gemini-2.5-flash"
+          OPENAI_MODEL: "gpt-4o-mini"
+          GROQ_MODEL: "openai/gpt-oss-20b"
+          OPENROUTER_MODEL: "openrouter/free"
+          CEREBRAS_MODEL: "gpt-oss-120b"
+
+          # -------------------------------------------------
+          # GITHUB GIST TELEMETRY
           # -------------------------------------------------
           GIST_ID: ${{ secrets.GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-
-          # -------------------------------------------------
-          # OWNER / SUDO
-          # -------------------------------------------------
-          OWNER_ID: ${{ secrets.OWNER_ID }}
-          SUDO_USERS: ${{ secrets.SUDO_USERS }}
-
-          # -------------------------------------------------
-          # OPTIONAL GIST FILENAME
-          # -------------------------------------------------
           GIST_FILENAME: "ayush_stats.json"
-
-          # -------------------------------------------------
-          # OPTIONAL AI MODELS
-          # These can also be changed later through secrets
-          # if your bot.py supports them.
-          # -------------------------------------------------
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
-          GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
-          OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
-          CEREBRAS_MODEL: ${{ secrets.CEREBRAS_MODEL }}
 
           # -------------------------------------------------
           # PYTHON
@@ -269,13 +238,3 @@ jobs:
           echo ""
 
           python -u bot.py
-
-          EXIT_CODE=$?
-
-          echo ""
-          echo "=========================================="
-          echo "BOT EXITED"
-          echo "Exit code: $EXIT_CODE"
-          echo "=========================================="
-
-          exit $EXIT_CODE
