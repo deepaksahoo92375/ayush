@@ -255,6 +255,73 @@ def stats_writer_loop():
             time.sleep(5)
 
 
+
+# =========================================================
+# DEVELOPER DAILY REPORT
+# =========================================================
+
+DAILY_REPORT_HOUR = int(os.getenv("DAILY_REPORT_HOUR", "21"))
+DAILY_REPORT_MINUTE = int(os.getenv("DAILY_REPORT_MINUTE", "0"))
+REPORT_TIMEZONE = os.getenv("REPORT_TIMEZONE", "Asia/Kolkata")
+
+last_daily_report_date = None
+
+
+def build_daily_report():
+    data = snapshot_stats()
+    uptime = data["uptime_seconds"]
+    hours = uptime // 3600
+    minutes = (uptime % 3600) // 60
+
+    return (
+        "📊 AYUSH BOT — DAILY REPORT\n\n"
+        f"👥 Active users: {data['active_users']}\n"
+        f"💬 Messages today: {data['messages_today']}\n"
+        f"🤖 AI replies: {data['ai_replies']}\n"
+        f"💬 Casual replies: {data['casual_replies']}\n"
+        f"🚫 Toxic blocked: {data['toxic_blocked']}\n"
+        f"⏱ Uptime: {hours}h {minutes}m\n"
+        f"📅 Date: {time.strftime('%Y-%m-%d')}\n"
+    )
+
+
+def developer_daily_report_loop(application):
+    """
+    Sends one daily statistics report to the configured developer group.
+    Uses the server's local clock; REPORT_TIMEZONE is retained as a
+    configuration label for deployments where the host is already IST.
+    """
+    global last_daily_report_date
+
+    while True:
+        try:
+            now = time.localtime()
+            today = time.strftime("%Y-%m-%d", now)
+
+            if (
+                now.tm_hour == DAILY_REPORT_HOUR
+                and now.tm_min == DAILY_REPORT_MINUTE
+                and last_daily_report_date != today
+            ):
+                report = build_daily_report()
+
+                if DEVELOPER_GROUP_ID:
+                    asyncio.run(
+                        application.bot.send_message(
+                            chat_id=DEVELOPER_GROUP_ID,
+                            text=report,
+                        )
+                    )
+
+                last_daily_report_date = today
+
+            time.sleep(30)
+
+        except Exception as e:
+            print("Daily report loop error:", repr(e))
+            time.sleep(30)
+
+
 # =========================================================
 # FLASK HEALTH SERVER
 # =========================================================
@@ -1485,6 +1552,16 @@ def main():
         .post_shutdown(post_shutdown)
         .build()
     )
+
+    # Developer daily statistics reporter.
+    report_thread = threading.Thread(
+        target=developer_daily_report_loop,
+        args=(application,),
+        name="DeveloperDailyReport",
+        daemon=True,
+    )
+    report_thread.start()
+    print("✅ Developer daily report thread started.")
 
     # Commands.
     application.add_handler(
