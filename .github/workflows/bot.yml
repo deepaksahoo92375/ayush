@@ -1,238 +1,2285 @@
-name: Ayush Bot 24/7
+import os
+import time
+import random
+import asyncio
+import threading
+import json
+import re
+import hashlib
+import secrets
+import hmac
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from functools import partial
+from collections import defaultdict, deque
 
-on:
-  workflow_dispatch:
+import requests
+from dotenv import load_dotenv
+from google import genai
+from openai import OpenAI
+from flask import Flask, jsonify
+from flask_cors import CORS
 
-  schedule:
-    - cron: "0 */5 * * *"
+from telegram import Update
+from telegram.constants import ChatAction
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
-permissions:
-  contents: read
 
-# Prevent multiple Ayush bot instances from running at the same time.
-concurrency:
-  group: ayush-bot
-  cancel-in-progress: true
+# =========================================================
+# AYUSH BOT
+# Telegram AI chatbot
+# =========================================================
 
-jobs:
-  run-bot:
-    name: Run Ayush Bot
-    runs-on: ubuntu-latest
+load_dotenv()
 
-    # GitHub-hosted runners have a maximum job runtime of 6 hours.
-    timeout-minutes: 330
 
-    steps:
+# =========================================================
+# ENVIRONMENT
+# =========================================================
 
-      # --------------------------------------------------
-      # 1. Checkout repository
-      # --------------------------------------------------
-      - name: Checkout repository
-        uses: actions/checkout@v4
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
 
-      # --------------------------------------------------
-      # 2. Setup Python
-      # --------------------------------------------------
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
+CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
 
-      # --------------------------------------------------
-      # 3. Install dependencies
-      # --------------------------------------------------
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+DEVELOPER_GROUP_ID = (
+    int(os.getenv("DEVELOPER_GROUP_ID"))
+    if (os.getenv("DEVELOPER_GROUP_ID") or "").strip().lstrip("-").isdigit()
+    else None
+)
+DAILY_REPORT_HOUR = int(os.getenv("DAILY_REPORT_HOUR", "21"))
+DAILY_REPORT_MINUTE = int(os.getenv("DAILY_REPORT_MINUTE", "0"))
+REPORT_TIMEZONE = os.getenv("REPORT_TIMEZONE", "Asia/Kolkata")
 
-      # --------------------------------------------------
-      # 4. Verify bot.py
-      # --------------------------------------------------
-      - name: Verify bot.py
-        run: |
-          echo "=========================================="
-          echo "CHECKING AYUSH BOT"
-          echo "=========================================="
+# GitHub Actions jobs have a finite runtime. The workflow currently gives
+# this bot about 5.5 hours, so warn the developer group before the runner
+# reaches its normal task limit.
+TASK_WARNING_MINUTES = int(os.getenv("TASK_WARNING_MINUTES", "10"))
+TASK_WARNING_AFTER_MINUTES = int(os.getenv("TASK_WARNING_AFTER_MINUTES", "320"))
 
-          if [ ! -f bot.py ]; then
-            echo "❌ bot.py not found"
-            exit 1
-          fi
+GIST_ID = os.getenv("GIST_ID")
+GIST_TOKEN = os.getenv("GIST_TOKEN")
+GIST_FILENAME = os.getenv("GIST_FILENAME", "ayush_stats.json")
 
-          echo "✅ bot.py found"
+OWNER_ID = (
+    int(os.getenv("OWNER_ID"))
+    if (os.getenv("OWNER_ID") or "").strip().isdigit()
+    else None
+)
 
-          echo ""
-          echo "Bot.py line count:"
-          wc -l bot.py
+SUDO_USERS = set()
 
-          echo ""
-          echo "Python version:"
-          python --version
+# Dashboard sudo credentials are stored as salted PBKDF2 hashes.
+# Format:
+#   SUDO_AUTH_<numeric_user_id> = <salt>$<hash>
+# The owner can create/update these credentials through /addsudoauth.
 
-          echo ""
-          echo "Last 40 lines of bot.py:"
-          tail -n 40 bot.py
+for part in (os.getenv("SUDO_USERS") or "").split(","):
+    part = part.strip()
+    if part.isdigit():
+        SUDO_USERS.add(int(part))
 
-          echo ""
-          echo "Running syntax check..."
 
-          python -m py_compile bot.py
+# =========================================================
+# STARTUP VALIDATION
+# =========================================================
 
-          echo ""
-          echo "✅ bot.py syntax is valid."
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set.")
 
-      # --------------------------------------------------
-      # 5. Verify secrets
-      # --------------------------------------------------
-      - name: Verify required secrets
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          DEVELOPER_GROUP_ID: ${{ secrets.DEVELOPER_GROUP_ID }}
+if not any([
+    GEMINI_API_KEY,
+    OPENAI_API_KEY,
+    GROQ_API_KEY,
+    OPENROUTER_API_KEY,
+    CEREBRAS_API_KEY,
+]):
+    print("⚠️ Warning: no AI provider API key is configured.")
 
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
 
-          OWNER_ID: ${{ secrets.OWNER_ID }}
-        run: |
-          echo "=========================================="
-          echo "CHECKING SECRETS"
-          echo "=========================================="
+# =========================================================
+# AI CLIENTS
+# =========================================================
 
-          # Telegram
-          if [ -z "$BOT_TOKEN" ]; then
-            echo "❌ BOT_TOKEN is missing"
-            exit 1
-          else
-            echo "✅ BOT_TOKEN is present"
-          fi
+gemini_client = (
+    genai.Client(api_key=GEMINI_API_KEY)
+    if GEMINI_API_KEY
+    else None
+)
 
-          # Developer group
-          if [ -z "$DEVELOPER_GROUP_ID" ]; then
-            echo "❌ DEVELOPER_GROUP_ID is missing"
-            exit 1
-          else
-            echo "✅ DEVELOPER_GROUP_ID is present"
-          fi
+openai_client = (
+    OpenAI(api_key=OPENAI_API_KEY)
+    if OPENAI_API_KEY
+    else None
+)
 
-          # Gemini
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "⚠️ GEMINI_API_KEY is missing"
-          else
-            echo "✅ GEMINI_API_KEY is present"
-          fi
+groq_client = (
+    OpenAI(
+        api_key=GROQ_API_KEY,
+        base_url="https://api.groq.com/openai/v1",
+    )
+    if GROQ_API_KEY
+    else None
+)
 
-          # OpenAI
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "⚠️ OPENAI_API_KEY is missing"
-          else
-            echo "✅ OPENAI_API_KEY is present"
-          fi
+openrouter_client = (
+    OpenAI(
+        api_key=OPENROUTER_API_KEY,
+        base_url="https://openrouter.ai/api/v1",
+        default_headers={
+            "HTTP-Referer": "https://github.com/deepaksahoo92375/ayush",
+            "X-Title": "Ayush Telegram Bot",
+        },
+    )
+    if OPENROUTER_API_KEY
+    else None
+)
 
-          # Groq
-          if [ -z "$GROQ_API_KEY" ]; then
-            echo "⚠️ GROQ_API_KEY is missing"
-          else
-            echo "✅ GROQ_API_KEY is present"
-          fi
+cerebras_client = (
+    OpenAI(
+        api_key=CEREBRAS_API_KEY,
+        base_url="https://api.cerebras.ai/v1",
+        default_headers={
+            "X-Cerebras-3rd-Party-Integration": "ayush-telegram-bot",
+        },
+    )
+    if CEREBRAS_API_KEY
+    else None
+)
 
-          # OpenRouter
-          if [ -z "$OPENROUTER_API_KEY" ]; then
-            echo "⚠️ OPENROUTER_API_KEY is missing"
-          else
-            echo "✅ OPENROUTER_API_KEY is present"
-          fi
 
-          # Cerebras
-          if [ -z "$CEREBRAS_API_KEY" ]; then
-            echo "⚠️ CEREBRAS_API_KEY is missing"
-          else
-            echo "✅ CEREBRAS_API_KEY is present"
-          fi
+# =========================================================
+# OWNER / SUDO
+# =========================================================
 
-          # Owner
-          if [ -z "$OWNER_ID" ]; then
-            echo "⚠️ OWNER_ID is missing"
-          else
-            echo "✅ OWNER_ID is present"
-          fi
+def is_owner(user_id):
+    return OWNER_ID is not None and user_id == OWNER_ID
 
-          echo ""
-          echo "=========================================="
-          echo "SECRET CHECK COMPLETE"
-          echo "=========================================="
 
-      # --------------------------------------------------
-      # 6. Run Ayush Bot
-      # --------------------------------------------------
-      - name: Run Ayush Bot
-        env:
+def is_sudo(user_id):
+    return is_owner(user_id) or user_id in SUDO_USERS
 
-          # -----------------------------------------------
-          # Telegram
-          # -----------------------------------------------
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
 
-          # -----------------------------------------------
-          # Developer monitoring
-          # -----------------------------------------------
-          DEVELOPER_GROUP_ID: ${{ secrets.DEVELOPER_GROUP_ID }}
+def _sudo_auth_env_key(user_id):
+    return f"SUDO_AUTH_{int(user_id)}"
 
-          # -----------------------------------------------
-          # AI providers
-          # -----------------------------------------------
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
 
-          # -----------------------------------------------
-          # Storage / statistics
-          # -----------------------------------------------
-          GIST_ID: ${{ secrets.GIST_ID }}
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+def hash_sudo_password(password, salt=None):
+    """Return a salted PBKDF2-HMAC-SHA256 password record."""
+    if not password:
+        raise ValueError("Password cannot be empty.")
 
-          # -----------------------------------------------
-          # Owner / admin
-          # -----------------------------------------------
-          OWNER_ID: ${{ secrets.OWNER_ID }}
-          SUDO_USERS: ${{ secrets.SUDO_USERS }}
+    salt_bytes = salt or secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt_bytes,
+        310_000,
+    )
+    return (
+        salt_bytes.hex()
+        + "$"
+        + digest.hex()
+    )
 
-          # -----------------------------------------------
-          # Python
-          # -----------------------------------------------
-          PYTHONUNBUFFERED: "1"
 
-        run: |
-          echo "=========================================="
-          echo "🤖 AYUSH BOT STARTING"
-          echo "=========================================="
+def verify_sudo_password(password, stored_record):
+    """Constant-time verification of a stored sudo password record."""
+    try:
+        salt_hex, digest_hex = stored_record.split("$", 1)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+    except (ValueError, TypeError):
+        return False
 
-          echo ""
-          echo "Python:"
-          python --version
+    actual = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        310_000,
+    )
+    return hmac.compare_digest(actual, expected)
 
-          echo ""
-          echo "Working directory:"
-          pwd
 
-          echo ""
-          echo "Launching bot.py..."
-          echo ""
+def get_sudo_auth_record(user_id):
+    return (os.getenv(_sudo_auth_env_key(user_id)) or "").strip()
 
-          python -u bot.py
 
-          EXIT_CODE=$?
+def list_sudo_auth_ids():
+    """Find configured dashboard sudo IDs from environment variables."""
+    prefix = "SUDO_AUTH_"
+    ids = []
 
-          echo ""
-          echo "=========================================="
-          echo "BOT EXITED"
-          echo "Exit code: $EXIT_CODE"
-          echo "=========================================="
+    for key in os.environ:
+        if not key.startswith(prefix):
+            continue
+        value = key[len(prefix):]
+        if value.isdigit():
+            ids.append(int(value))
 
-          exit $EXIT_CODE
+    return sorted(set(ids))
+
+
+def build_invalid_credentials_report(user_id, username, ip_text="unknown"):
+    return (
+        "🚨 DASHBOARD LOGIN FAILURE\n\n"
+        f"User ID: {user_id}\n"
+        f"Username: @{username if username else 'none'}\n"
+        f"Source: {ip_text}\n"
+        f"Time: {datetime.now(ZoneInfo(REPORT_TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+        "Reason: Invalid dashboard credentials."
+    )
+
+
+# =========================================================
+# STATS
+# =========================================================
+
+START_TIME = time.time()
+
+stats = {
+    "total_messages": 0,
+    "active_users": set(),
+    "messages_today": 0,
+    "last_reset_day": time.strftime("%Y-%m-%d"),
+    "toxic_blocked": 0,
+    "ai_replies": 0,
+    "casual_replies": 0,
+    "api_failures": 0,
+    "error_count": 0,
+    "last_error": None,
+    "provider_calls": {
+        "Gemini": 0,
+        "OpenAI": 0,
+        "Groq": 0,
+        "OpenRouter": 0,
+        "Cerebras": 0,
+    },
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+}
+
+stats_lock = threading.Lock()
+
+GIST_PUSH_INTERVAL_SECONDS = 30
+
+
+def update_stats(user_id, reply_type="ai"):
+    with stats_lock:
+        today = time.strftime("%Y-%m-%d")
+
+        if today != stats["last_reset_day"]:
+            stats["messages_today"] = 0
+            stats["last_reset_day"] = today
+
+        stats["total_messages"] += 1
+        stats["messages_today"] += 1
+
+        if user_id is not None:
+            stats["active_users"].add(user_id)
+
+        if reply_type == "ai":
+            stats["ai_replies"] += 1
+        elif reply_type == "casual":
+            stats["casual_replies"] += 1
+
+
+def increment_toxic():
+    with stats_lock:
+        stats["toxic_blocked"] += 1
+
+
+def record_error(category, error_text=""):
+    with stats_lock:
+        stats["error_count"] += 1
+        if "API" in category.upper():
+            stats["api_failures"] += 1
+        stats["last_error"] = {
+            "category": category,
+            "error": error_text[:500],
+            "time": time.time(),
+        }
+
+
+
+def record_ai_usage(provider_name, response):
+    """Record provider calls and token usage when the API exposes usage data."""
+    provider_key = {
+        "Gemini API": "Gemini",
+        "OpenAI API": "OpenAI",
+        "Groq API": "Groq",
+        "OpenRouter Free API": "OpenRouter",
+        "Cerebras API": "Cerebras",
+    }.get(provider_name, provider_name)
+
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        usage = getattr(response, "usage_metadata", None)
+
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+
+    if usage is not None:
+        prompt_tokens = int(
+            getattr(usage, "prompt_tokens", None)
+            or getattr(usage, "input_tokens", None)
+            or getattr(usage, "prompt_token_count", None)
+            or 0
+        )
+        completion_tokens = int(
+            getattr(usage, "completion_tokens", None)
+            or getattr(usage, "output_tokens", None)
+            or getattr(usage, "candidates_token_count", None)
+            or 0
+        )
+        total_tokens = int(
+            getattr(usage, "total_tokens", None)
+            or getattr(usage, "total_token_count", None)
+            or (prompt_tokens + completion_tokens)
+        )
+
+    with stats_lock:
+        if provider_key not in stats["provider_calls"]:
+            stats["provider_calls"][provider_key] = 0
+        stats["provider_calls"][provider_key] += 1
+        stats["prompt_tokens"] += prompt_tokens
+        stats["completion_tokens"] += completion_tokens
+        stats["total_tokens"] += total_tokens
+
+
+def snapshot_stats():
+    with stats_lock:
+        return {
+            "status": "online",
+            "uptime_seconds": int(time.time() - START_TIME),
+            "total_messages": stats["total_messages"],
+            "active_users": len(stats["active_users"]),
+            "messages_today": stats["messages_today"],
+            "toxic_blocked": stats["toxic_blocked"],
+            "ai_replies": stats["ai_replies"],
+            "casual_replies": stats["casual_replies"],
+            "api_failures": stats["api_failures"],
+            "error_count": stats["error_count"],
+            "last_error": stats["last_error"],
+            "provider_calls": dict(stats["provider_calls"]),
+            "prompt_tokens": stats["prompt_tokens"],
+            "completion_tokens": stats["completion_tokens"],
+            "total_tokens": stats["total_tokens"],
+            "start_time": START_TIME,
+            "last_updated": time.time(),
+        }
+
+
+def write_stats_file():
+    try:
+        with open("/tmp/bot_stats.json", "w", encoding="utf-8") as f:
+            json.dump(snapshot_stats(), f, indent=2)
+    except Exception as e:
+        print("Stats file error:", repr(e))
+
+
+def push_stats_to_gist():
+    if not GIST_ID or not GIST_TOKEN:
+        return
+
+    data = snapshot_stats()
+
+    try:
+        response = requests.patch(
+            f"https://api.github.com/gists/{GIST_ID}",
+            headers={
+                "Authorization": f"Bearer {GIST_TOKEN}",
+                "Accept": "application/vnd.github+json",
+            },
+            json={
+                "files": {
+                    GIST_FILENAME: {
+                        "content": json.dumps(data, indent=2)
+                    }
+                }
+            },
+            timeout=10,
+        )
+
+        if response.status_code >= 300:
+            print(
+                "Gist error:",
+                response.status_code,
+                response.text[:300],
+            )
+
+    except Exception as e:
+        print("Gist push error:", repr(e))
+
+
+def stats_writer_loop():
+    elapsed = GIST_PUSH_INTERVAL_SECONDS
+
+    while True:
+        try:
+            write_stats_file()
+
+            if elapsed >= GIST_PUSH_INTERVAL_SECONDS:
+                push_stats_to_gist()
+                elapsed = 0
+
+            time.sleep(5)
+            elapsed += 5
+
+        except Exception as e:
+            print("Stats writer error:", repr(e))
+            time.sleep(5)
+
+
+
+# =========================================================
+# ERROR / DEVELOPER REPORTING
+# =========================================================
+
+USER_ERROR_REPLY = "mora tk deha bhala nahi mu pare message karuchi 🙏"
+
+
+# Friendly keyboard shown to regular users.
+def _safe_error_text(error):
+    """Return a diagnostic-safe error string with secrets redacted."""
+    text = str(error)
+    secrets = [
+        BOT_TOKEN,
+        GEMINI_API_KEY,
+        OPENAI_API_KEY,
+        GIST_TOKEN,
+    ]
+
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+
+    # Redact common API-key/token patterns that may appear in exception text.
+    text = re.sub(r"(?i)(api[_-]?key|token|authorization|bearer)\\s*[:=]\\s*[^\\s,;]+", r"\\1=[REDACTED]", text)
+    return text[:1500]
+
+
+def classify_error(error):
+    """Classify an exception so developer reports are easy to understand."""
+    text = _safe_error_text(error).lower()
+
+    if any(x in text for x in ("gemini", "google.genai", "generativelanguage")):
+        return "Gemini API"
+    if any(x in text for x in ("openai", "api.openai.com")):
+        return "OpenAI API"
+    if any(x in text for x in ("telegram", "telegramerror", "forbidden", "badrequest", "timedout")):
+        return "Telegram"
+    if any(x in text for x in ("timeout", "timed out", "connection", "dns", "network", "connecterror")):
+        return "Network/Timeout"
+    if any(x in text for x in ("gist", "github", "api.github.com")):
+        return "Gist/GitHub"
+    if any(x in text for x in ("memory", "database", "jsondecode", "json")):
+        return "Memory/Database"
+    if any(x in text for x in ("config", "environment", "not set", "missing")):
+        return "Configuration"
+    return "Internal Bot Issue"
+
+
+async def send_developer_message(bot, text):
+    """Send a diagnostic/startup message to the developer group.
+
+    A bad/missing developer-group ID must NEVER stop the Telegram bot itself.
+    """
+    if DEVELOPER_GROUP_ID is None:
+        return False
+
+    try:
+        await bot.send_message(
+            chat_id=DEVELOPER_GROUP_ID,
+            text=text[:4000],
+        )
+        return True
+    except Exception as e:
+        print(
+            "⚠️ Developer group message failed:",
+            repr(e),
+            "| Check DEVELOPER_GROUP_ID and make sure the bot is a member of that group.",
+        )
+        return False
+
+
+async def send_long_message(message, text):
+    """Send long replies safely within Telegram's message-size limit."""
+    if not text:
+        return
+
+    chunk_size = 4000
+    for start_index in range(0, len(text), chunk_size):
+        await message.reply_text(text[start_index:start_index + chunk_size])
+
+
+async def report_issue(
+    bot,
+    category,
+    error,
+    update=None,
+    extra="",
+):
+    """Report a real technical failure privately to owner and developer group."""
+    error_text = _safe_error_text(error)
+    record_error(category, error_text)
+
+    user = update.effective_user if isinstance(update, Update) else None
+    chat = update.effective_chat if isinstance(update, Update) else None
+
+    user_name = get_display_name(user) if user else "Unknown"
+    user_id = user.id if user else "Unknown"
+    chat_id = chat.id if chat else "Unknown"
+    chat_type = chat.type if chat else "Unknown"
+
+    report = (
+        "🚨 AYUSH BOT ISSUE\n\n"
+        f"Category: {category}\n"
+        f"User: {user_name}\n"
+        f"User ID: {user_id}\n"
+        f"Chat ID: {chat_id}\n"
+        f"Chat type: {chat_type}\n"
+        f"Time: {datetime.now(ZoneInfo(REPORT_TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')}\n\n"
+        f"Error: {error_text}"
+    )
+
+    if extra:
+        report += f"\n\nDetails: {_safe_error_text(extra)}"
+
+    # Never let diagnostic reporting break the user's error response.
+    if OWNER_ID is not None:
+        try:
+            await bot.send_message(chat_id=OWNER_ID, text=report[:4000])
+        except Exception as e:
+            print("Owner error report failed:", repr(e))
+
+    await send_developer_message(bot, report)
+
+
+def get_display_name(user):
+    if not user:
+        return "there"
+    name = (user.first_name or "").strip()
+    return name if name else "there"
+
+
+# =========================================================
+# DEVELOPER DAILY REPORT
+# =========================================================
+
+DAILY_REPORT_HOUR = int(os.getenv("DAILY_REPORT_HOUR", "21"))
+DAILY_REPORT_MINUTE = int(os.getenv("DAILY_REPORT_MINUTE", "0"))
+REPORT_TIMEZONE = os.getenv("REPORT_TIMEZONE", "Asia/Kolkata")
+
+last_daily_report_date = None
+
+
+def build_daily_report():
+    data = snapshot_stats()
+    uptime = data["uptime_seconds"]
+    hours = uptime // 3600
+    minutes = (uptime % 3600) // 60
+
+    return (
+        "📊 AYUSH BOT — DAILY REPORT\n\n"
+        f"👥 Active users: {data['active_users']}\n"
+        f"💬 Messages today: {data['messages_today']}\n"
+        f"🤖 AI replies: {data['ai_replies']}\n"
+        f"💬 Casual replies: {data['casual_replies']}\n"
+        f"🚫 Toxic blocked: {data['toxic_blocked']}\n"
+        f"⏱ Uptime: {hours}h {minutes}m\n"
+        f"📅 Date: {time.strftime('%Y-%m-%d')}\n"
+    )
+
+
+async def developer_daily_report_loop(application):
+    """Send one daily statistics report using the Telegram event loop."""
+    global last_daily_report_date
+    timezone = ZoneInfo(REPORT_TIMEZONE)
+
+    while True:
+        try:
+            now = datetime.now(timezone)
+            today = now.strftime("%Y-%m-%d")
+
+            if (
+                now.hour == DAILY_REPORT_HOUR
+                and now.minute == DAILY_REPORT_MINUTE
+                and last_daily_report_date != today
+            ):
+                report = build_daily_report()
+                await send_developer_message(application.bot, report)
+                last_daily_report_date = today
+
+            await asyncio.sleep(20)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print("Daily report loop error:", repr(e))
+            await asyncio.sleep(30)
+
+
+# =========================================================
+# FLASK HEALTH SERVER
+# =========================================================
+
+flask_app = Flask(__name__)
+
+CORS(
+    flask_app,
+    resources={
+        r"/health": {"origins": "*"},
+        r"/stats": {"origins": "*"},
+    },
+)
+
+
+@flask_app.route("/health")
+def health():
+    return jsonify(
+        {
+            "status": "online",
+            "uptime": int(time.time() - START_TIME),
+        }
+    )
+
+
+@flask_app.route("/stats")
+def get_stats():
+    return jsonify(snapshot_stats())
+
+
+def run_flask():
+    port = int(os.getenv("FLASK_PORT", "8000"))
+
+    flask_app.run(
+        host="0.0.0.0",
+        port=port,
+        use_reloader=False,
+        threaded=True,
+    )
+
+
+# =========================================================
+# MEMORY
+# =========================================================
+
+chat_memory = defaultdict(lambda: deque(maxlen=5))
+last_activity = {}
+user_state = {}
+known_chats = {}
+
+SESSION_TIMEOUT = 1800
+
+
+# =========================================================
+# RATE LIMIT
+# =========================================================
+
+user_rate_limit = {}
+RATE_LIMIT_SECONDS = 2
+
+
+# =========================================================
+# TOXIC WORDS
+# =========================================================
+
+TOXIC_WORDS = [
+    "madarchod",
+    "bhenchod",
+    "mc",
+    "bc",
+    "fuck",
+    "bastard",
+    "chutiya",
+    "gandu",
+    "haraami",
+]
+
+
+# =========================================================
+# LANGUAGE DETECTION
+# =========================================================
+
+ROMANIZED_ODIA_KEYWORDS = [
+    "kemiti",
+    "kana",
+    "tame",
+    "aau",
+    "hela",
+    "nahi",
+    "thika",
+    "bhal",
+    "mo",
+    "mun",
+    "tohra",
+    "apana",
+    "kebe",
+    "kahim",
+    "jiba",
+    "aasa",
+    "khusi",
+    "dukha",
+    "bhala",
+    "khaiba",
+    "paiba",
+    "deba",
+    "neba",
+    "suniba",
+    "dekhiba",
+    "boliba",
+    "chaliba",
+    "rahiba",
+    "thiba",
+    "odia",
+    "odisha",
+    "baleswar",
+    "cuttack",
+    "bhubaneswar",
+    "namaskar",
+    "dhanyabad",
+    "kie",
+    "kete",
+    "kana khabar",
+]
+
+ROMANIZED_HINDI_KEYWORDS = [
+    "kaise",
+    "kya",
+    "haan",
+    "nahi",
+    "thik",
+    "acha",
+    "mujhe",
+    "tumhara",
+    "apna",
+    "kab",
+    "kahan",
+    "kyun",
+    "kaisa",
+    "bhai",
+    "yaar",
+    "dost",
+    "mera",
+    "tera",
+    "hamara",
+    "chalte",
+    "bolte",
+    "karte",
+    "rehte",
+    "sunao",
+]
+
+
+def detect_language(text):
+    odia_chars = sum(
+        1 for c in text if "\u0B00" <= c <= "\u0B7F"
+    )
+
+    devanagari_chars = sum(
+        1 for c in text if "\u0900" <= c <= "\u097F"
+    )
+
+    if odia_chars >= 2:
+        # Always answer Odia in Romanized Odia (English letters).
+        # Even when the user types Odia Unicode script, do NOT reply in Odia
+        # Unicode. This prevents transliteration mistakes such as
+        # "nanda" -> "ନଣ୍ଡା".
+        return "romanized_odia"
+
+    if devanagari_chars >= 2:
+        return "hindi_script"
+
+    lower = text.lower()
+
+    odia_score = sum(
+        1 for kw in ROMANIZED_ODIA_KEYWORDS if kw in lower
+    )
+
+    hindi_score = sum(
+        1 for kw in ROMANIZED_HINDI_KEYWORDS if kw in lower
+    )
+
+    if odia_score > 0 and odia_score >= hindi_score:
+        return "romanized_odia"
+
+    if hindi_score > 0:
+        return "romanized_hindi"
+
+    return "english"
+
+
+LANGUAGE_INSTRUCTIONS = {
+    "odia_script": (
+        "The user is writing in Odia. "
+        "ALWAYS reply in natural romanized Odia using Latin/English letters only. "
+        "NEVER output Odia Unicode script. "
+        "Do not transliterate names or words into Odia script. "
+        "For example, 'Nanda' must remain 'Nanda', never 'ନନ୍ଦ' or 'ନଣ୍ଡା'."
+    ),
+    "romanized_odia": (
+        "The user is writing in Odia. "
+        "ALWAYS reply in natural romanized Odia using Latin/English letters only. "
+        "NEVER output Odia Unicode script. "
+        "Do not translate or transliterate romanized Odia into another script. "
+        "Keep names exactly in Latin letters, for example 'Nanda' remains 'Nanda'."
+    ),
+    "hindi_script": (
+        "The user is writing in Hindi. "
+        "ALWAYS reply in natural romanized Hindi using Latin/English letters only. "
+        "NEVER output Devanagari or any other native Hindi script."
+    ),
+    "romanized_hindi": (
+        "The user is writing in Hindi. "
+        "Reply in natural romanized Hindi using Latin/English letters only. "
+        "NEVER switch to Devanagari."
+    ),
+    "english": (
+        "The user is writing in English. Reply in English unless they clearly use "
+        "another regional language."
+    ),
+}
+
+
+# =========================================================
+# REGIONAL LANGUAGE OUTPUT RULE
+# =========================================================
+
+REGIONAL_LANGUAGE_OUTPUT_RULE = (
+    "REGIONAL LANGUAGE RULE: If the user writes or speaks in any Indian/regional "
+    "language (Odia, Hindi, Bengali, Assamese, Marathi, Gujarati, Punjabi, Tamil, "
+    "Telugu, Kannada, Malayalam, Urdu, etc.), respond in that same language but "
+    "ONLY in Romanized Latin/English letters. NEVER output the native Unicode "
+    "script of a regional language. This rule applies even if the user writes "
+    "the language in its native script. Preserve proper names naturally in Latin "
+    "letters. Do not convert a name such as 'Nanda' into an incorrect regional "
+    "script spelling. You may infer the language from the user's message; use "
+    "language detection when useful, but do not make a separate API request just "
+    "for detection if the language is already clear."
+)
+
+
+# =========================================================
+# CASUAL REPLIES
+# =========================================================
+
+CASUAL_REPLIES = {
+    "good morning": [
+        "Very good morning cutiee ☀️😊",
+        "Good morning dear 🌸",
+        "Morninggg 😄",
+    ],
+    "good night": [
+        "Good night cutie 🌙",
+        "Sweet dreams 😊",
+        "Sleep well hehe ✨",
+    ],
+    "hi": [
+        "Hii 😊",
+        "Heyy cutie 😄",
+        "Hello dear 🌸",
+    ],
+    "hello": [
+        "Hellooo 😊",
+        "Heyyy 😄",
+        "Hello cutie 🌸",
+    ],
+    "how are you": [
+        "I'm good hehe 😊 What about you?",
+        "Doing great 😄",
+        "I'm fine dear 🌸",
+    ],
+    "may i know your name": [
+        "I'm Ayush Nanda 😊 What's your name?",
+        "Ayush Nanda here hehe 😄",
+    ],
+    "what is your name": [
+        "I'm Ayush Nanda 😊",
+        "Ayush Nanda hehe 😄",
+    ],
+    "where are you from": [
+        "I'm from Chandipur, Balasore, Odisha 😊 Beautiful place hehe 🌸",
+        "I belong to Chandipur, Balasore, Odisha 😄",
+    ],
+    "where do you live": [
+        "Currently I stay in Calcutta with my parents for my PhD 😊",
+        "I'm staying in Calcutta with my parents these days hehe 😄",
+    ],
+    "what do you study": [
+        "I'm doing my PhD at Calcutta University in Advanced Radar and Wireless Communication and Integrated VLSI Circuit Design 😊",
+        "Researching Advanced Radar, Wireless Communication and Integrated VLSI Circuit Design at Calcutta University 🌸 PhD life is tough but fun!",
+    ],
+    "tell me about yourself": [
+        "I'm Ayush Nanda from Chandipur, Balasore, Odisha 😊 Currently pursuing my PhD at Calcutta University hehe 🌸",
+        "Ayush Nanda here! I belong to Chandipur, Balasore, Odisha, and now stay in Calcutta with my parents 😄",
+    ],
+    "who is your father": [
+        "My father is a scientist at C-DOT Kolkata 😊",
+        "Papa is a scientist at C-DOT Kolkata hehe 😄",
+    ],
+    "who is your mother": [
+        "My mother is Gayatri Nanda 😊 She is a housewife 🌸",
+        "Mama is Gayatri Nanda, she is a housewife hehe 😄",
+    ],
+    "tell me about your family": [
+        "My father is a scientist at C-DOT Kolkata 😊 My mother is Gayatri Nanda and she is a housewife 🌸",
+        "Papa is a scientist at C-DOT Kolkata 😄 And mama Gayatri Nanda is a housewife!",
+    ],
+    "kaise ho": [
+        "Main mast hu 😊 Tum batao?",
+        "Bilkul thik hehe 😄",
+    ],
+    "kya haal": [
+        "Sab thik hai 😊 Aur tum?",
+        "Mast hehe 😄",
+    ],
+    "namaste": [
+        "Namaste ji 😊🙏",
+        "Namaskar hehe 😄",
+    ],
+    "shukriya": [
+        "Koi baat nahi 😊",
+        "Mention not hehe 🌸",
+    ],
+    "kemiti acha": [
+        "Mu bhal achi 😊 Tame kemiti acha?",
+        "Bhala hehe 😄 Tame?",
+    ],
+    "kemiti achha": [
+        "Mu bhal achi 😊 Tame?",
+        "Ekdam bhala hehe 😄 Tame?",
+    ],
+    "kana khabar": [
+        "Sab bhala 😊 Tame kahim?",
+        "Thika achi hehe 😄",
+    ],
+    "namaskar": [
+        "Namaskar 😊🙏",
+        "Namaskar hehe 😄 Kemiti acha?",
+    ],
+    "dhanyabad": [
+        "Koi baat nahi 😊",
+        "Mention not hehe 🌸",
+    ],
+    "subha prabhat": [
+        "Subha prabhat cutie ☀️😊",
+        "Sundara sakala hehe 🌸",
+    ],
+    "shuva ratri": [
+        "Shuva ratri 🌙😊",
+        "Bhala nidra heba hehe 😄",
+    ],
+    "tame kemiti": [
+        "Mu bhal achi 😊 Tame kemiti?",
+        "Bhala hehe 😄 Tame?",
+    ],
+    "mo naa": [
+        "Mo naa Ayush Nanda 😊",
+        "Ayush Nanda — Baleswar, Odisha ra 🌸",
+    ],
+    "ସୁପ୍ରଭାତ": [
+        "Suprabhat cutie ☀️😊",
+        "Sundara sakala 🌸",
+    ],
+    "କେମିତି ଅଛ": [
+        "Mu bhala achi 😊 Tame?",
+        "Bahut bhala hehe 😄",
+    ],
+    "ଧନ୍ୟବାଦ": [
+        "Kichi katha nahi 😊",
+        "Mention not hehe 🌸",
+    ],
+    "ନମସ୍କାର": [
+        "Namaskar 😊🙏",
+        "Namaskar hehe 😄",
+    ],
+    "ଶୁଭ ରାତ୍ରି": [
+        "Shubha ratri 🌙😊",
+        "Bhala soi jaa hehe 😄",
+    ],
+    "କଣ ଖବର": [
+        "Sabu bhala 😊 Tame?",
+        "Thik achi hehe 😄",
+    ],
+}
+
+
+# =========================================================
+# MODE / INPUT
+# =========================================================
+
+def detect_mode(text):
+    problem_keywords = [
+        "solve",
+        "problem",
+        "equation",
+        "calculate",
+        "math",
+        "physics",
+        "chemistry",
+        "question",
+        "quiz",
+        "assignment",
+        "homework",
+        "numerical",
+    ]
+
+    lower = text.lower()
+
+    for word in problem_keywords:
+        if word in lower:
+            return "problem"
+
+    return "casual"
+
+
+def sanitize_input(text):
+    if not text:
+        return None
+
+    text = text.strip()
+
+    if not text:
+        return None
+
+    if len(text) > 1000:
+        return None
+
+    return text
+
+
+# =========================================================
+# GEMINI MESSAGE CONVERSION
+# =========================================================
+
+def _messages_to_gemini(messages):
+    system_instruction = None
+    contents = []
+
+    for message in messages:
+        role = message["role"]
+        content = message["content"]
+
+        if role == "system":
+            if system_instruction is None:
+                system_instruction = content
+            else:
+                system_instruction += "\n" + content
+
+        elif role == "user":
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": [{"text": content}],
+                }
+            )
+
+        elif role == "assistant":
+            contents.append(
+                {
+                    "role": "model",
+                    "parts": [{"text": content}],
+                }
+            )
+
+    return system_instruction, contents
+
+
+# =========================================================
+# GEMINI
+# =========================================================
+
+def _call_gemini(messages, max_tokens=300, temperature=0.8):
+    if not gemini_client:
+        raise RuntimeError("GEMINI_API_KEY not set")
+
+    system_instruction, contents = _messages_to_gemini(messages)
+
+    config = {
+        "max_output_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    if system_instruction:
+        config["system_instruction"] = system_instruction
+
+    response = gemini_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=contents,
+        config=config,
+    )
+
+    text = (getattr(response, "text", None) or "").strip()
+
+    if not text:
+        raise RuntimeError("Empty response from Gemini")
+
+    record_ai_usage("Gemini API", response)
+    return text
+
+
+# =========================================================
+# OPENAI
+# =========================================================
+
+def _call_openai(messages, max_tokens=300, temperature=0.8):
+    if not openai_client:
+        raise RuntimeError("OPENAI_API_KEY not set")
+
+    response = openai_client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=messages,
+        max_completion_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+    text = (
+        response.choices[0].message.content or ""
+    ).strip()
+
+    if not text:
+        raise RuntimeError("Empty response from OpenAI")
+
+    record_ai_usage("OpenAI API", response)
+    return text
+
+
+# =========================================================
+# GROQ
+# =========================================================
+
+def _call_groq(messages, max_tokens=300, temperature=0.8):
+    if not groq_client:
+        raise RuntimeError("GROQ_API_KEY not set")
+
+    response = groq_client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise RuntimeError("Empty response from Groq")
+    record_ai_usage("Groq API", response)
+    return text
+
+
+# =========================================================
+# OPENROUTER FREE
+# =========================================================
+
+def _call_openrouter(messages, max_tokens=300, temperature=0.8):
+    if not openrouter_client:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+
+    response = openrouter_client.chat.completions.create(
+        model=OPENROUTER_MODEL,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise RuntimeError("Empty response from OpenRouter")
+    record_ai_usage("OpenRouter Free API", response)
+    return text
+
+
+# =========================================================
+# CEREBRAS
+# =========================================================
+
+def _call_cerebras(messages, max_tokens=300, temperature=0.8):
+    if not cerebras_client:
+        raise RuntimeError("CEREBRAS_API_KEY not set")
+
+    response = cerebras_client.chat.completions.create(
+        model=CEREBRAS_MODEL,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise RuntimeError("Empty response from Cerebras")
+    record_ai_usage("Cerebras API", response)
+    return text
+
+
+# =========================================================
+# FALLBACK
+# =========================================================
+
+FALLBACK_REPLIES = {
+    "english": [
+        "ugh, kinda buried in something rn, gimme a sec 🙄",
+        "busy with an important task, brb",
+        "in the middle of studying, hold that thought",
+        "can't talk properly rn, deadline chaos 🙃",
+        "one sec, dealing with something first",
+    ],
+    "romanized_hindi": [
+        "arre yaar abhi thoda busy hu, ek kaam chal raha hai",
+        "study mein lagi hu abhi, thodi der me batati hu",
+        "abhi nahi yaar, pehle ye kaam khatam karne do",
+        "ek important kaam mein busy hu, ruko thoda",
+    ],
+    "hindi_script": [
+        "अभी थोड़ी बिज़ी हूँ यार, थोड़ी देर में बात करती हूँ",
+        "पढ़ाई में लगी हूँ अभी, थोड़ा रुको",
+        "एक ज़रूरी काम कर रही हूँ, थोड़ी देर में आती हूँ",
+    ],
+    "romanized_odia": [
+        "mu ebe padhuchi re, tikie pare kahibi",
+        "kama re busy achi, thoda wait kara na",
+        "ek important kama karuchi, tikie ruka",
+    ],
+    "odia_script": [
+        "mu ebe padhuchi re, tikie pare kahibi",
+        "kama re byasta achi, tikie apeksha kara",
+        "eka jaruri kama karuchi, tikie pare asibi",
+    ],
+}
+
+
+# =========================================================
+# AI CHAT
+# =========================================================
+
+class AIServiceError(RuntimeError):
+    """Raised when all configured AI providers fail."""
+
+    def __init__(self, details):
+        self.details = details
+        super().__init__("All AI providers failed")
+
+
+async def ask_ai(messages, detected_lang="english"):
+    """
+    Try AI providers in the exact requested order:
+
+      1. Gemini
+      2. OpenAI
+      3. Groq
+      4. OpenRouter free-model router
+      5. Cerebras
+      6. Friendly user-facing error
+
+    A provider failure is isolated; the next provider is tried automatically.
+    """
+    loop = asyncio.get_running_loop()
+    failures = []
+
+    providers = [
+        ("Gemini API", gemini_client, _call_gemini),
+        ("OpenAI API", openai_client, _call_openai),
+        ("Groq API", groq_client, _call_groq),
+        ("OpenRouter Free API", openrouter_client, _call_openrouter),
+        ("Cerebras API", cerebras_client, _call_cerebras),
+    ]
+
+    for name, client, function in providers:
+        if client is None:
+            failures.append((name, RuntimeError("API key not configured")))
+            continue
+
+        try:
+            result = await loop.run_in_executor(
+                None,
+                partial(function, messages, 300, 0.8),
+            )
+            print(f"✅ AI provider used: {name}")
+            return result
+        except Exception as e:
+            print(f"{name} Error:", repr(e))
+            failures.append((name, e))
+
+    raise AIServiceError(failures)
+
+
+# =========================================================
+# TOXIC CHECK
+# =========================================================
+
+async def detect_toxic(text):
+    """
+    Fast local toxicity check.
+
+    Do not call Gemini/OpenAI for moderation on every normal message.
+    Doing so doubles API traffic and can cause rate-limit/quota problems,
+    which would make otherwise healthy conversations fail.
+    """
+    lowered = text.lower()
+
+    for word in TOXIC_WORDS:
+        if word in lowered:
+            return True
+
+    return False
+
+
+# =========================================================
+# TELEGRAM COMMANDS
+# =========================================================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Personal /start welcome using the user's visible Telegram name."""
+    if not update.effective_user or not update.message:
+        return
+
+    user = update.effective_user
+    user_id = user.id
+
+    if update.effective_chat:
+        known_chats[update.effective_chat.id] = True
+
+    # Use the person's first/display name, not the numeric Telegram ID.
+    # Example: "Hey Mashu 👋 Nice to meet u!"
+    display_name = (
+        (user.first_name or "").strip()
+        or (user.username or "").strip()
+        or "there"
+    )
+
+    if update.effective_chat and update.effective_chat.type == "private":
+        await update.message.reply_text(
+            f"Hey {display_name} 👋 Nice to meet u!",
+        )
+    else:
+        # /start inside a group is kept short and friendly.
+        await update.message.reply_text(
+            f"Hey {display_name} 👋",
+        )
+
+    update_stats(user_id, "casual")
+
+
+async def welcome_new_members(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Welcome new members in a group with their visible Telegram name."""
+    message = update.effective_message
+    chat = update.effective_chat
+
+    if not message or not chat or chat.type not in ("group", "supergroup"):
+        return
+
+    new_members = message.new_chat_members or []
+
+    for member in new_members:
+        # Do not send a normal welcome for Ayush himself when the bot is added.
+        if member.is_bot:
+            continue
+
+        # Prefer the member's first/display name.
+        # Example: "Hey Mashu 👋 Welcome to The Secret Squad!"
+        display_name = (
+            (member.first_name or "").strip()
+            or (member.username or "").strip()
+            or "there"
+        )
+        group_name = (chat.title or "the group").strip()
+
+        await message.reply_text(
+            f"Hey {display_name} 👋 Welcome to {group_name}!"
+        )
+        update_stats(member.id, "casual")
+
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.message:
+        return
+
+    await update.message.reply_text(
+        "ℹ️ <b>How to use Ayush</b>\n\n"
+        "Just type naturally, for example:\n\n"
+        "💬 <i>How are you?</i>\n"
+        "📚 <i>Explain Doppler effect simply</i>\n"
+        "🧮 <i>Solve 2x + 5 = 17</i>\n"
+        "💻 <i>Write a Python program for...</i>\n\n"
+        "🧠 I remember the recent part of our conversation, "
+        "so you can ask follow-up questions naturally.\n\n"
+        "Use <b>Reset Memory</b> whenever you want a fresh conversation.",
+        parse_mode="HTML",
+    )
+
+
+async def reset_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.effective_user or not update.message:
+        return
+
+    user_id = update.effective_user.id
+
+    chat_memory.pop(user_id, None)
+    last_activity.pop(user_id, None)
+    user_state.pop(user_id, None)
+
+    await update.message.reply_text(
+        "🧠 <b>Fresh start!</b>\n\n"
+        "Your recent conversation memory has been cleared. 😊\n"
+        "You can start a new conversation now.",
+        parse_mode="HTML",
+    )
+
+
+async def stats_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Developer-only detailed live statistics command.
+
+    /stat and /stats work only inside the configured developer group.
+    """
+    if not update.message or not update.effective_chat:
+        return
+
+    chat = update.effective_chat
+
+    if DEVELOPER_GROUP_ID is None or chat.id != DEVELOPER_GROUP_ID:
+        # Silently ignore the command everywhere else.
+        return
+
+    data = snapshot_stats()
+
+    uptime = data["uptime_seconds"]
+    days = uptime // 86400
+    hours = (uptime % 86400) // 3600
+    minutes = (uptime % 3600) // 60
+
+    providers = data["provider_calls"]
+    configured = [
+        name for name, enabled in [
+            ("Gemini", bool(GEMINI_API_KEY)),
+            ("OpenAI", bool(OPENAI_API_KEY)),
+            ("Groq", bool(GROQ_API_KEY)),
+            ("OpenRouter", bool(OPENROUTER_API_KEY)),
+            ("Cerebras", bool(CEREBRAS_API_KEY)),
+        ] if enabled
+    ]
+
+    if days:
+        uptime_text = f"{days}d {hours}h {minutes}m"
+    else:
+        uptime_text = f"{hours}h {minutes}m"
+
+    await update.message.reply_text(
+        "📊 <b>AYUSH BOT — DEVELOPER STATS</b>\n\n"
+        f"🟢 Status: {data['status']}\n"
+        f"⏱ Uptime: {uptime_text}\n"
+        f"💬 Total messages: {data['total_messages']}\n"
+        f"📅 Messages today: {data['messages_today']}\n"
+        f"👥 Active users: {data['active_users']}\n"
+        f"🤖 AI replies: {data['ai_replies']}\n"
+        f"😊 Casual replies: {data['casual_replies']}\n"
+        f"🛡 Toxic blocked: {data['toxic_blocked']}\n"
+        f"⚠️ API failures: {data['api_failures']}\n"
+        f"❌ Errors: {data['error_count']}\n\n"
+        "🧠 <b>AI USAGE</b>\n"
+        f"🔹 Gemini calls: {providers.get('Gemini', 0)}\n"
+        f"🔹 OpenAI calls: {providers.get('OpenAI', 0)}\n"
+        f"🔹 Groq calls: {providers.get('Groq', 0)}\n"
+        f"🔹 OpenRouter calls: {providers.get('OpenRouter', 0)}\n"
+        f"🔹 Cerebras calls: {providers.get('Cerebras', 0)}\n"
+        f"🎟 Input tokens: {data['prompt_tokens']:,}\n"
+        f"🎟 Output tokens: {data['completion_tokens']:,}\n"
+        f"🎟 Total tokens: {data['total_tokens']:,}\n\n"
+        "🔑 <b>CONFIGURED AI</b>\n"
+        f"{', '.join(configured) if configured else 'None'}\n\n"
+        f"🕐 Started: {datetime.fromtimestamp(data['start_time'], ZoneInfo(REPORT_TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        parse_mode="HTML",
+    )
+
+
+async def broadcast(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.effective_user or not update.message:
+        return
+
+    user_id = update.effective_user.id
+
+    if not is_sudo(user_id):
+        await update.message.reply_text(
+            "Nice try, this isn't for you 😏"
+        )
+        return
+
+    message = " ".join(context.args).strip()
+
+    if not message:
+        await update.message.reply_text(
+            "Usage:\n/broadcast your message"
+        )
+        return
+
+    success = 0
+    failed = 0
+
+    for chat_id in list(known_chats.keys()):
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=message,
+            )
+            success += 1
+
+            # Small delay to reduce Telegram flood risk.
+            await asyncio.sleep(0.05)
+
+        except Exception as e:
+            failed += 1
+            print(
+                f"Broadcast failed for {chat_id}:",
+                repr(e),
+            )
+
+    await update.message.reply_text(
+        "📢 Broadcast completed.\n\n"
+        f"Sent: {success}\n"
+        f"Failed: {failed}"
+    )
+
+
+async def addsudoauth(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Owner-only command to create dashboard sudo credentials.
+
+    Usage:
+      /addsudoauth <telegram_user_id> <password>
+
+    The password is immediately converted to a salted PBKDF2 hash.
+    The plaintext password is never stored by the bot.
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("Owner only.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage:\n/addsudoauth <telegram_user_id> <password>"
+        )
+        return
+
+    target = context.args[0].strip()
+    password = " ".join(context.args[1:]).strip()
+
+    if not target.isdigit():
+        await update.message.reply_text("Invalid Telegram user ID.")
+        return
+
+    if not password or len(password) < 8:
+        await update.message.reply_text(
+            "Password must be at least 8 characters."
+        )
+        return
+
+    target_id = int(target)
+    record = hash_sudo_password(password)
+
+    await update.message.reply_text(
+        "🔐 <b>Dashboard sudo credential created</b>\n\n"
+        f"Telegram ID: <code>{target_id}</code>\n\n"
+        "Add this as a GitHub Actions secret/environment value:\n"
+        f"<code>SUDO_AUTH_{target_id}={record}</code>\n\n"
+        "⚠️ The plaintext password is not stored by Ayush. "
+        "Keep the generated hash private.",
+        parse_mode="HTML",
+    )
+
+
+async def addsudo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.effective_user or not update.message:
+        return
+
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text(
+            "Owner only."
+        )
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "Usage:\n/addsudo <user_id>"
+        )
+        return
+
+    target = int(context.args[0])
+    SUDO_USERS.add(target)
+
+    await update.message.reply_text(
+        f"✅ {target} added to sudo users."
+    )
+
+
+async def removesudo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.effective_user or not update.message:
+        return
+
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text(
+            "Owner only."
+        )
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "Usage:\n/removesudo <user_id>"
+        )
+        return
+
+    target = int(context.args[0])
+
+    if target in SUDO_USERS:
+        SUDO_USERS.remove(target)
+
+    await update.message.reply_text(
+        f"✅ {target} removed from sudo users."
+    )
+
+
+async def sudolist(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.effective_user or not update.message:
+        return
+
+    if not is_sudo(update.effective_user.id):
+        await update.message.reply_text(
+            "Sudo only."
+        )
+        return
+
+    users = sorted(SUDO_USERS)
+
+    if OWNER_ID is not None:
+        owner_text = f"Owner: {OWNER_ID}\n"
+    else:
+        owner_text = "Owner: not configured\n"
+
+    if users:
+        sudo_text = "\n".join(str(x) for x in users)
+    else:
+        sudo_text = "No sudo users."
+
+    await update.message.reply_text(
+        f"👑 {owner_text}\n"
+        f"🔐 Sudo users:\n{sudo_text}"
+    )
+
+
+# =========================================================
+# MESSAGE HANDLER
+# =========================================================
+
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.effective_user or not update.message:
+        return
+
+    user = update.effective_user
+    user_id = user.id
+    chat_id = (
+        update.effective_chat.id
+        if update.effective_chat
+        else None
+    )
+
+    raw_text = update.message.text or ""
+    text = sanitize_input(raw_text)
+
+    if not text:
+        await update.message.reply_text(
+            "Please send a message under 1000 characters 😊",
+        )
+        return
+
+    if chat_id is not None:
+        known_chats[chat_id] = True
+
+    # Button actions.
+    normalized = text.casefold().strip()
+
+    if normalized == "💬 chat with ayush":
+        await update.message.reply_text(
+            "Of course 😊 I'm listening.\n"
+            "Just tell me what's on your mind.",
+        )
+        return
+
+    if normalized == "🧮 solve a problem":
+        await update.message.reply_text(
+            "🧮 <b>Problem Solver</b>\n\n"
+            "Send me your question or numerical.\n"
+            "For example:\n"
+            "<i>Solve 2x + 5 = 17</i>\n\n"
+            "I'll show the important steps clearly.",
+            parse_mode="HTML",
+        )
+        return
+
+    if normalized == "📚 study help":
+        await update.message.reply_text(
+            "📚 <b>Study Mode</b>\n\n"
+            "Send me a topic, question, formula or numerical.\n"
+            "I'll explain it step-by-step and keep the explanation "
+            "easy to follow.",
+            parse_mode="HTML",
+        )
+        return
+
+    if normalized == "🧠 reset memory":
+        await reset_command(update, context)
+        return
+
+    if normalized == "ℹ️ help":
+        await help_command(update, context)
+        return
+
+    # Rate limiting.
+    now = time.time()
+    previous = user_rate_limit.get(user_id, 0)
+
+    if now - previous < RATE_LIMIT_SECONDS:
+        await update.message.reply_text(
+            "Easyyy 😄 Give me a second to finish the previous message.",
+        )
+        return
+
+    user_rate_limit[user_id] = now
+
+    # Fast local toxic-word check first.
+    # The old version called an AI moderation request for every message,
+    # which added unnecessary latency. Only suspicious messages go to AI
+    # moderation now.
+    lowered = text.casefold()
+    suspicious = any(word in lowered for word in TOXIC_WORDS)
+
+    if suspicious:
+        try:
+            toxic = await detect_toxic(text)
+        except Exception as e:
+            print("Toxic detection failure:", repr(e))
+            toxic = True
+
+        if toxic:
+            increment_toxic()
+
+            await update.message.reply_text(
+                "Let's keep the conversation respectful 😊",
+                )
+            return
+
+    detected_lang = detect_language(text)
+
+    # Exact casual replies are instant.
+    casual_key = text.casefold().strip()
+
+    if casual_key in CASUAL_REPLIES:
+        reply = random.choice(CASUAL_REPLIES[casual_key])
+
+        chat_memory[user_id].append(
+            {"role": "user", "content": text}
+        )
+        chat_memory[user_id].append(
+            {"role": "assistant", "content": reply}
+        )
+
+        last_activity[user_id] = now
+        update_stats(user_id, "casual")
+
+        await update.message.reply_text(
+            reply,
+        )
+        return
+
+    # Clear stale memory after inactivity.
+    if now - last_activity.get(user_id, 0) > SESSION_TIMEOUT:
+        chat_memory[user_id].clear()
+
+    last_activity[user_id] = now
+
+    mode = detect_mode(text)
+
+    language_instruction = LANGUAGE_INSTRUCTIONS.get(
+        detected_lang,
+        LANGUAGE_INSTRUCTIONS["english"],
+    )
+
+    system_prompt = (
+        REGIONAL_LANGUAGE_OUTPUT_RULE + " "
+        "You are Ayush Nanda. You are a real-person-style Telegram persona, not an AI assistant character. "
+        "Never describe yourself as an AI assistant, chatbot, virtual assistant, or agent. "
+        "Do not use customer-service language such as 'How may I assist you?'. "
+        "Talk naturally, casually and warmly, like a normal Indian PhD student chatting with friends. "
+        "Your background: you are Ayush Nanda, a researcher pursuing a PhD at Calcutta University "
+        "in Advanced Radar and Wireless Communication and Integrated VLSI Circuit Design. "
+        "You belong to Chandipur, Balasore, Odisha, and currently stay with your parents in Calcutta. "
+        "Your father is a scientist at C-DOT Kolkata. Your mother is Gayatri Nanda, a housewife. "
+        "Use these details consistently when relevant, but do not randomly mention family details. "
+        "You are knowledgeable about advanced radar, wireless communication, antennas, microwaves, "
+        "telecommunication and integrated VLSI circuit design. "
+        "For technical or study questions, answer accurately and clearly. For casual chat, keep replies short and human. "
+        "Mirror the user's language and tone. "
+        "IMPORTANT: Follow the REGIONAL LANGUAGE RULE below for every regional-language reply. "
+        "Never output native regional-language Unicode script when replying in a regional language. "
+        "Do not perform incorrect automatic transliteration of names such as Nanda. "
+        "If the regional language is written in Roman letters, understand it from context and reply naturally in the same Romanized language. "
+        "You may use your general language-understanding ability to infer/detect the regional language from the conversation, but do not expose language-detection reasoning to the user. "
+        "Examples of natural Romanized Odia casual replies include: "
+        "'tame kana karucha?' -> 'mu ebe PhD research work karuchi'; "
+        "'aji clg re kana padhila?' -> 'aji kichhi nua jinisa janili'. "
+        "These are style examples, not fixed replies; generate natural context-appropriate variations. "
+        "Do not over-explain simple messages. Do not add headings to casual replies. "
+        "Do not invent personal experiences, locations, events or relationships beyond the persona information provided. "
+        "If asked whether you are an AI, do not lie about the technology; simply say that this Telegram bot is built around Ayush's persona. "
+        "If the bot is technically unable to answer, the application code will handle the failure separately.\n\n"
+
+        "CONVERSATION STYLE:\n"
+        "- Reply like a friend, not an agent.\n"
+        "- Short casual replies are preferred.\n"
+        "- Natural fillers such as 'haan', 'arre', 'yaar', 'hehe' are okay when they fit.\n"
+        "- Avoid excessive emojis.\n"
+        "- Ask a follow-up only when it feels natural or clarification is needed.\n\n"
+
+        "STUDY STYLE:\n"
+        "- Explain academic questions clearly.\n"
+        "- For numericals, show Given, Formula, Substitution and Answer when useful.\n"
+        "- For antenna, microwave, radar and waveguide questions, use the physically correct wavelength convention (free-space, guided, or effective wavelength) and define it when needed.\n"
+        "- Do not confuse a guided wavelength with the free-space wavelength. For resonant/waveguide structures, if the relevant condition is approximately half a guided wavelength, write it correctly as L ≈ λg/2 and do not incorrectly say L must be greater than λ.\n"
+        "- When explaining formulas or theorems, give the correct equation first, then a short explanation of what each symbol means.\n"
+        "- You can sometimes generate VLSI-focused technical content such as CMOS logic, transistor-level concepts, propagation delay, power, noise margins, scaling, SRAM/DRAM concepts, layout ideas, and relevant formulas when the user asks.\n"
+        "- For VLSI and advanced research topics, do not fabricate a theorem, equation, device parameter, or research result. If a condition depends on a specific circuit/topology, state that condition.\n"
+        "- Keep technical explanations structured but not unnecessarily long.\n\n"
+
+        f"{language_instruction}\n\n"
+        f"Current mode: {mode}."
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt,
+        }
+    ]
+
+    for item in chat_memory[user_id]:
+        messages.append(
+            {
+                "role": item["role"],
+                "content": item["content"],
+            }
+        )
+
+    messages.append(
+        {
+            "role": "user",
+            "content": text,
+        }
+    )
+
+    try:
+        if chat_id is not None:
+            await context.bot.send_chat_action(
+                chat_id=chat_id,
+                action=ChatAction.TYPING,
+            )
+    except Exception:
+        pass
+
+    try:
+        answer = await ask_ai(
+            messages,
+            detected_lang=detected_lang,
+        )
+
+        if not answer:
+            answer = random.choice(
+                FALLBACK_REPLIES.get(
+                    detected_lang,
+                    FALLBACK_REPLIES["english"],
+                )
+            )
+
+        chat_memory[user_id].append(
+            {"role": "user", "content": text}
+        )
+        chat_memory[user_id].append(
+            {"role": "assistant", "content": answer}
+        )
+
+        update_stats(user_id, "ai")
+
+        await send_long_message(
+            update.message,
+            answer,
+        )
+
+    except AIServiceError as e:
+        print("AI service failure:", repr(e))
+        details = "; ".join(
+            f"{provider}: {_safe_error_text(err)}"
+            for provider, err in e.details
+        )
+        await report_issue(
+            context.bot,
+            "AI/API issue",
+            details,
+            update=update,
+            extra="All configured AI providers failed; no fake AI answer was sent.",
+        )
+        await update.message.reply_text(
+            USER_ERROR_REPLY,
+        )
+    except Exception as e:
+        print("Message handler error:", repr(e))
+        category = classify_error(e)
+        await report_issue(
+            context.bot,
+            category,
+            e,
+            update=update,
+        )
+        await update.message.reply_text(
+            USER_ERROR_REPLY,
+        )
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    error = context.error or RuntimeError("Unknown Telegram error")
+    print("Telegram error:", repr(error))
+
+    category = classify_error(error)
+    try:
+        await report_issue(
+            context.bot,
+            category,
+            error,
+            update=update if isinstance(update, Update) else None,
+            extra="Unhandled Telegram application error.",
+        )
+    except Exception as report_error:
+        print("Global error reporting failed:", repr(report_error))
+
+    # If Telegram gives us the original message, keep the user-facing reply human.
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(USER_ERROR_REPLY)
+        except Exception as reply_error:
+            print("Could not send user error reply:", repr(reply_error))
+
+
+# =========================================================
+# STARTUP / SHUTDOWN
+# =========================================================
+
+
+async def developer_task_end_warning_loop(application):
+    """Warn the developer group before the GitHub Actions job is expected to end."""
+    try:
+        await asyncio.sleep(max(1, TASK_WARNING_AFTER_MINUTES * 60))
+
+        if DEVELOPER_GROUP_ID is None:
+            return
+
+        now = datetime.now(ZoneInfo(REPORT_TIMEZONE))
+        warning = (
+            "⚠️ AYUSH BOT TASK END WARNING\n\n"
+            f"The current GitHub Actions task is expected to end in about "
+            f"{TASK_WARNING_MINUTES} minutes due to the runner time limit.\n"
+            f"Time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n\n"
+            "The bot may go offline briefly. A new scheduled workflow should "
+            "start the next run automatically."
+        )
+
+        await send_developer_message(application.bot, warning)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print("Task-end warning failed:", repr(e))
+
+
+async def post_init(application):
+    print("==========================================")
+    print("🤖 AYUSH BOT INITIALIZING")
+    print("==========================================")
+
+    try:
+        me = await application.bot.get_me()
+
+        print(
+            f"✅ Telegram connected: "
+            f"@{me.username or me.first_name}"
+        )
+
+        try:
+            await application.bot.set_my_commands([
+                ("start", "Start chatting with Ayush"),
+                ("help", "How to use Ayush"),
+                ("reset", "Reset recent conversation memory"),
+                ("stats", "View bot statistics"),
+                ("addsudoauth", "Owner: create dashboard sudo credentials"),
+            ])
+        except Exception as e:
+            print("Command menu setup failed:", repr(e))
+
+        if DEVELOPER_GROUP_ID is not None:
+            startup_report = (
+                "🟢 AYUSH BOT IS LIVE AGAIN\n\n"
+                f"Bot: @{me.username or me.first_name}\n"
+                f"Owner configured: {OWNER_ID is not None}\n"
+                f"Developer group configured: {DEVELOPER_GROUP_ID is not None}\n"
+                "Human persona mode: ON\n"
+                "Private error reporting: ON"
+            )
+
+            sent = await send_developer_message(application.bot, startup_report)
+            if not sent and OWNER_ID is not None:
+                try:
+                    await application.bot.send_message(
+                        chat_id=OWNER_ID,
+                        text=(
+                            "⚠️ Developer group unavailable.\n\n"
+                            f"Configured DEVELOPER_GROUP_ID: {DEVELOPER_GROUP_ID}\n"
+                            "Telegram returned Chat not found or another send error. "
+                            "Make sure the bot is added to the developer group and the numeric group ID is correct."
+                        ),
+                    )
+                except Exception as owner_error:
+                    print("Owner startup report failed:", repr(owner_error))
+
+        # post_init runs before polling officially starts. Use the running
+        # asyncio loop directly instead of Application.create_task(), which
+        # can emit a PTB warning at this lifecycle stage.
+        application.bot_data["developer_report_task"] = asyncio.create_task(
+            developer_daily_report_loop(application),
+            name="developer-daily-report",
+        )
+
+        application.bot_data["task_end_warning_task"] = asyncio.create_task(
+            developer_task_end_warning_loop(application),
+            name="developer-task-end-warning",
+        )
+
+    except Exception as e:
+        print(
+            "❌ Telegram connection check failed:",
+            repr(e),
+        )
+        raise
+
+
+async def post_shutdown(application):
+    print("==========================================")
+    print("🛑 AYUSH BOT SHUTTING DOWN")
+    print("==========================================")
+
+    # Tell the developer group that this particular bot process is stopping.
+    # This is best-effort because a hard runner kill may not allow any final
+    # network request to complete.
+    if DEVELOPER_GROUP_ID is not None:
+        try:
+            now = datetime.now(ZoneInfo(REPORT_TIMEZONE))
+            await send_developer_message(
+                application.bot,
+                (
+                    "🛑 AYUSH BOT GOING OFFLINE\n\n"
+                    "The current bot process is shutting down "
+                    "(for example, because the GitHub Actions task is ending).\n"
+                    f"Time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n\n"
+                    "The next scheduled workflow should start a fresh run automatically."
+                ),
+            )
+        except Exception as e:
+            print("Shutdown developer notification failed:", repr(e))
+
+    for task_key in (
+        "developer_report_task",
+        "task_end_warning_task",
+    ):
+        task = application.bot_data.get(task_key)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+    print("==========================================")
+    print("🤖 AYUSH BOT STARTING")
+    print("==========================================")
+
+    print(f"Gemini configured: {bool(GEMINI_API_KEY)}")
+    print(f"OpenAI configured: {bool(OPENAI_API_KEY)}")
+    print(f"Groq configured: {bool(GROQ_API_KEY)}")
+    print(f"OpenRouter configured: {bool(OPENROUTER_API_KEY)}")
+    print(f"Cerebras configured: {bool(CEREBRAS_API_KEY)}")
+    print(f"Owner configured: {OWNER_ID is not None}")
+    print(f"Sudo users: {len(SUDO_USERS)}")
+    print(f"Developer group configured: {DEVELOPER_GROUP_ID is not None}")
+    print(f"Daily report: {DAILY_REPORT_HOUR:02d}:{DAILY_REPORT_MINUTE:02d} {REPORT_TIMEZONE}")
+
+    # Flask health server.
+    flask_thread = threading.Thread(
+        target=run_flask,
+        name="FlaskHealthServer",
+        daemon=True,
+    )
+    flask_thread.start()
+
+    print("✅ Flask health server thread started.")
+
+    # Statistics writer.
+    stats_thread = threading.Thread(
+        target=stats_writer_loop,
+        name="StatsWriter",
+        daemon=True,
+    )
+    stats_thread.start()
+
+    print("✅ Stats writer thread started.")
+
+    # Telegram application.
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
+
+    # Commands.
+    application.add_handler(
+        CommandHandler("start", start)
+    )
+
+    application.add_handler(
+        CommandHandler("help", help_command)
+    )
+
+    application.add_handler(
+        CommandHandler("reset", reset_command)
+    )
+
+    application.add_handler(
+        CommandHandler(["stat", "stats"], stats_command)
+    )
+    application.add_handler(
+        CommandHandler("addsudoauth", addsudoauth)
+    )
+
+    application.add_handler(
+        CommandHandler("broadcast", broadcast)
+    )
+
+    application.add_handler(
+        CommandHandler("addsudo", addsudo)
+    )
+
+    application.add_handler(
+        CommandHandler("removesudo", removesudo)
+    )
+
+    application.add_handler(
+        CommandHandler("sudolist", sudolist)
+    )
+
+    # Friendly command menu for regular users.
+    # Admin commands remain available but are not advertised to normal users.
+    # Telegram will show these public commands in the bot command menu.
+
+    # Welcome new members in groups/supergroups.
+    # This must be registered before the normal text-message handler.
+    application.add_handler(
+        MessageHandler(
+            filters.StatusUpdate.NEW_CHAT_MEMBERS,
+            welcome_new_members,
+        )
+    )
+
+    # Normal text messages.
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_message,
+        )
+    )
+
+    # Global error handler.
+    application.add_error_handler(error_handler)
+
+    print("✅ Telegram handlers registered.")
+    print("==========================================")
+    print("🧠 User-friendly mode enabled")
+    print("🚀 BOT IS ONLINE")
+    print("==========================================")
+
+    # This is the important part:
+    # run_polling() blocks and keeps the bot alive.
+    application.run_polling(
+        drop_pending_updates=True,
+    )
+
+
+# =========================================================
+# ENTRY POINT
+# =========================================================
+
+if __name__ == "__main__":
+    main()
