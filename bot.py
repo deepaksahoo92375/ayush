@@ -263,6 +263,18 @@ def stats_writer_loop():
 USER_ERROR_REPLY = "mora tk deha bhala nahi mu pare message karuchi 🙏"
 
 
+# Friendly keyboard shown to regular users.
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("💬 Chat with Ayush"), KeyboardButton("🧮 Solve a problem")],
+        [KeyboardButton("📚 Study help"), KeyboardButton("🧠 Reset memory")],
+        [KeyboardButton("ℹ️ Help")],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+
 def _safe_error_text(error):
     """Return a diagnostic-safe error string with secrets redacted."""
     text = str(error)
@@ -304,8 +316,11 @@ def classify_error(error):
 
 
 async def send_developer_message(bot, text):
-    """Send a diagnostic/startup message to the developer group."""
-    if not DEVELOPER_GROUP_ID:
+    """Send a diagnostic/startup message to the developer group.
+
+    A bad/missing developer-group ID must NEVER stop the Telegram bot itself.
+    """
+    if DEVELOPER_GROUP_ID is None:
         return False
 
     try:
@@ -315,7 +330,11 @@ async def send_developer_message(bot, text):
         )
         return True
     except Exception as e:
-        print("Developer group message failed:", repr(e))
+        print(
+            "⚠️ Developer group message failed:",
+            repr(e),
+            "| Check DEVELOPER_GROUP_ID and make sure the bot is a member of that group.",
+        )
         return False
 
 
@@ -1593,17 +1612,34 @@ async def post_init(application):
             print("Command menu setup failed:", repr(e))
 
         if DEVELOPER_GROUP_ID is not None:
-            await send_developer_message(
-                application.bot,
+            startup_report = (
                 "🟢 AYUSH BOT ONLINE\n\n"
                 f"Bot: @{me.username or me.first_name}\n"
                 f"Owner configured: {OWNER_ID is not None}\n"
                 f"Developer group configured: {DEVELOPER_GROUP_ID is not None}\n"
                 "Human persona mode: ON\n"
-                "Private error reporting: ON",
+                "Private error reporting: ON"
             )
 
-        application.create_task(
+            sent = await send_developer_message(application.bot, startup_report)
+            if not sent and OWNER_ID is not None:
+                try:
+                    await application.bot.send_message(
+                        chat_id=OWNER_ID,
+                        text=(
+                            "⚠️ Developer group unavailable.\n\n"
+                            f"Configured DEVELOPER_GROUP_ID: {DEVELOPER_GROUP_ID}\n"
+                            "Telegram returned Chat not found or another send error. "
+                            "Make sure the bot is added to the developer group and the numeric group ID is correct."
+                        ),
+                    )
+                except Exception as owner_error:
+                    print("Owner startup report failed:", repr(owner_error))
+
+        # post_init runs before polling officially starts. Use the running
+        # asyncio loop directly instead of Application.create_task(), which
+        # can emit a PTB warning at this lifecycle stage.
+        application.bot_data["developer_report_task"] = asyncio.create_task(
             developer_daily_report_loop(application),
             name="developer-daily-report",
         )
@@ -1620,6 +1656,14 @@ async def post_shutdown(application):
     print("==========================================")
     print("🛑 AYUSH BOT SHUTTING DOWN")
     print("==========================================")
+
+    task = application.bot_data.get("developer_report_task")
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 # =========================================================
