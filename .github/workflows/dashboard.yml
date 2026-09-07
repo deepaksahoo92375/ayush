@@ -31,7 +31,6 @@ jobs:
       ACCESS_FILENAME: "ayush_access.json"
 
       COOKIE_SECURE: "true"
-
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -85,6 +84,8 @@ jobs:
       - name: Install dashboard dependencies
         working-directory: dashboard
         run: |
+          set -e
+
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
@@ -95,6 +96,8 @@ jobs:
 
       - name: Check dashboard syntax
         run: |
+          set -e
+
           python -m py_compile dashboard/dashboard.py
 
           echo "Dashboard syntax check passed."
@@ -126,17 +129,25 @@ jobs:
           check_secret OWNER_ID
           check_secret GIST_ID
           check_secret GIST_TOKEN
+
           check_secret TELEGRAM_CLIENT_ID
           check_secret TELEGRAM_CLIENT_SECRET
+
           check_secret SESSION_SECRET
+          check_secret TAILSCALE_AUTHKEY
 
           if [ "$missing" -ne 0 ]; then
+            echo ""
+            echo "Required GitHub secrets are missing."
             exit 1
           fi
 
+          echo ""
+          echo "All required secrets are present."
+
 
       # ==========================================================
-      # TAILSCALE
+      # CONNECT TO TAILSCALE
       # ==========================================================
 
       - name: Connect to Tailscale
@@ -146,29 +157,47 @@ jobs:
 
 
       # ==========================================================
-      # SHOW TAILSCALE DEVICE
+      # TAILSCALE STATUS
       # ==========================================================
 
       - name: Show Tailscale status
+        shell: bash
         run: |
+          set -e
+
           echo "=========================================="
           echo "TAILSCALE STATUS"
           echo "=========================================="
 
-          tailscale status
+          sudo tailscale status
 
           echo ""
-          echo "Machine hostname:"
-          tailscale status --json | python -c '
+          echo "=========================================="
+          echo "TAILSCALE HOSTNAME"
+          echo "=========================================="
+
+          TAILSCALE_DNS_NAME="$(sudo tailscale status --json | python -c '
           import json
           import sys
 
           data = json.load(sys.stdin)
-
           self_node = data.get("Self", {})
+          print(self_node.get("DNSName", ""))
+          ')"
 
-          print(self_node.get("DNSName", "unknown"))
-          '
+          if [ -z "$TAILSCALE_DNS_NAME" ]; then
+            echo "::error::Could not determine Tailscale DNS hostname."
+            exit 1
+          fi
+
+          TAILSCALE_DNS_NAME="${TAILSCALE_DNS_NAME%.}"
+
+          echo "Tailscale hostname:"
+          echo "$TAILSCALE_DNS_NAME"
+
+          echo ""
+          echo "Public dashboard will use:"
+          echo "https://$TAILSCALE_DNS_NAME"
 
 
       # ==========================================================
@@ -180,7 +209,9 @@ jobs:
         run: |
           set -e
 
-          echo "Starting Ayush Dashboard..."
+          echo "=========================================="
+          echo "STARTING AYUSH DASHBOARD"
+          echo "=========================================="
 
           nohup python -u -m uvicorn dashboard:app \
             --host 0.0.0.0 \
@@ -202,7 +233,9 @@ jobs:
         run: |
           set -e
 
-          echo "Waiting for FastAPI..."
+          echo "=========================================="
+          echo "WAITING FOR FASTAPI"
+          echo "=========================================="
 
           for i in {1..30}; do
 
@@ -221,16 +254,18 @@ jobs:
 
           done
 
-          echo "Dashboard failed to start."
+          echo "::error::Dashboard failed to start."
 
+          echo ""
           echo "===== DASHBOARD LOG ====="
+
           cat dashboard.log || true
 
           exit 1
 
 
       # ==========================================================
-      # START TAILSCALE FUNNEL
+      # ENABLE TAILSCALE FUNNEL
       # ==========================================================
 
       - name: Start Tailscale Funnel
@@ -242,7 +277,13 @@ jobs:
           echo "STARTING TAILSCALE FUNNEL"
           echo "=========================================="
 
-          tailscale funnel --bg 8000
+          echo ""
+          echo "If Funnel has not yet been enabled for"
+          echo "your tailnet, Tailscale will provide the"
+          echo "authorization URL below."
+          echo ""
+
+          sudo tailscale funnel --bg 8000
 
           sleep 5
 
@@ -251,32 +292,108 @@ jobs:
           echo "FUNNEL STATUS"
           echo "=========================================="
 
-          tailscale funnel status
+          sudo tailscale funnel status
 
 
       # ==========================================================
       # GET PUBLIC URL
       # ==========================================================
 
-      - name: Get public dashboard URL
+      - name: Show public dashboard URLs
         shell: bash
         run: |
           set -e
 
+          TAILSCALE_DNS_NAME="$(sudo tailscale status --json | python -c '
+          import json
+          import sys
+
+          data = json.load(sys.stdin)
+          self_node = data.get("Self", {})
+          print(self_node.get("DNSName", ""))
+          ')"
+
+          TAILSCALE_DNS_NAME="${TAILSCALE_DNS_NAME%.}"
+
+          if [ -z "$TAILSCALE_DNS_NAME" ]; then
+            echo "::error::Could not determine public hostname."
+            exit 1
+          fi
+
+          echo ""
           echo "=========================================="
           echo "AYUSH DASHBOARD PUBLIC URL"
           echo "=========================================="
 
-          tailscale funnel status
+          echo ""
+          echo "Dashboard:"
+          echo "https://$TAILSCALE_DNS_NAME"
 
           echo ""
-          echo "Look for the HTTPS URL shown above."
+          echo "Admin Login:"
+          echo "https://$TAILSCALE_DNS_NAME/login"
+
           echo ""
-          echo "Admin URL:"
-          echo "https://YOUR-TAILSCALE-HOSTNAME.ts.net/login"
+          echo "Telegram OIDC Callback:"
+          echo "https://$TAILSCALE_DNS_NAME/auth/callback"
+
           echo ""
-          echo "OIDC callback:"
-          echo "https://YOUR-TAILSCALE-HOSTNAME.ts.net/auth/callback"
+          echo "Wallpaper API:"
+          echo "https://$TAILSCALE_DNS_NAME/api/wallpaper"
+
+          echo ""
+          echo "Dashboard API:"
+          echo "https://$TAILSCALE_DNS_NAME/api/dashboard"
+
+          echo ""
+          echo "=========================================="
+          echo "TAILSCALE FUNNEL STATUS"
+          echo "=========================================="
+
+          sudo tailscale funnel status
+
+
+      # ==========================================================
+      # TEST PUBLIC DASHBOARD
+      # ==========================================================
+
+      - name: Test public dashboard
+        shell: bash
+        run: |
+          set -e
+
+          TAILSCALE_DNS_NAME="$(sudo tailscale status --json | python -c '
+          import json
+          import sys
+
+          data = json.load(sys.stdin)
+          self_node = data.get("Self", {})
+          print(self_node.get("DNSName", ""))
+          ')"
+
+          TAILSCALE_DNS_NAME="${TAILSCALE_DNS_NAME%.}"
+
+          echo "Testing:"
+          echo "https://$TAILSCALE_DNS_NAME"
+
+          sleep 5
+
+          HTTP_CODE="$(curl \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --write-out "%{http_code}" \
+            --max-time 20 \
+            "https://$TAILSCALE_DNS_NAME/")"
+
+          echo "HTTP status: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Public dashboard returned HTTP $HTTP_CODE"
+            exit 1
+          fi
+
+          echo "Public dashboard is reachable."
 
 
       # ==========================================================
@@ -286,10 +403,12 @@ jobs:
       - name: Keep dashboard alive
         shell: bash
         run: |
+          echo ""
           echo "=========================================="
           echo "AYUSH DASHBOARD IS LIVE"
           echo "=========================================="
 
+          echo ""
           echo "The dashboard will remain available"
           echo "while this GitHub Actions job is running."
 
@@ -298,9 +417,10 @@ jobs:
 
           while true; do
 
+            echo ""
+            echo "----- $(date -u '+%Y-%m-%d %H:%M:%S UTC') -----"
+
             if [ -f dashboard.log ]; then
-              echo ""
-              echo "----- $(date -u '+%Y-%m-%d %H:%M:%S UTC') -----"
               tail -n 30 dashboard.log
             fi
 
@@ -315,11 +435,20 @@ jobs:
 
       - name: Cleanup
         if: always()
+        shell: bash
         run: |
-          echo "Stopping Funnel..."
+          echo "=========================================="
+          echo "CLEANUP"
+          echo "=========================================="
 
-          tailscale funnel reset || true
+          echo "Stopping Tailscale Funnel..."
+
+          sudo tailscale funnel reset || true
 
           if [ -f dashboard.pid ]; then
+            echo "Stopping dashboard..."
+
             kill "$(cat dashboard.pid)" 2>/dev/null || true
           fi
+
+          echo "Cleanup completed."
