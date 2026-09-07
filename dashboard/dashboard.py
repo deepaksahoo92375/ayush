@@ -1047,29 +1047,15 @@ def public_home(
 
 
     return templates.TemplateResponse(
-
-        "index.html",
-
-        {
-
-            "request":
-                request,
-
-            "bot_url":
-                PUBLIC_BOT_URL,
-
-            "odia_url":
-                ODIA_GROUP_URL,
-
-            "international_url":
-                INTERNATIONAL_GROUP_URL,
-
-            "error":
-                error,
-
-            "wallpaper":
-                wallpaper,
-        }
+        request=request,
+        name="index.html",
+        context={
+            "bot_url": PUBLIC_BOT_URL,
+            "odia_url": ODIA_GROUP_URL,
+            "international_url": INTERNATIONAL_GROUP_URL,
+            "error": error,
+            "wallpaper": wallpaper,
+        },
     )
 
 
@@ -1328,36 +1314,16 @@ def admin(
 
 
     return templates.TemplateResponse(
-
-        "admin.html",
-
-        {
-
-            "request":
-                request,
-
-            "user":
-                user,
-
-            "stats":
-                stats,
-
-            "access":
-                access,
-
-            "is_owner":
-                is_owner,
-
-            "role":
-                (
-                    "owner"
-                    if is_owner
-                    else "sudo"
-                ),
-
-            "wallpaper":
-                wallpaper,
-        }
+        request=request,
+        name="admin.html",
+        context={
+            "user": user,
+            "stats": stats,
+            "access": access,
+            "is_owner": is_owner,
+            "role": "owner" if is_owner else "sudo",
+            "wallpaper": wallpaper,
+        },
     )
 
 
