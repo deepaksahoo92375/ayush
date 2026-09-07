@@ -50,11 +50,20 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
-CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
+# Model names can be overridden with GitHub Actions / VM environment variables.
+# IMPORTANT: using `or default` also protects us when a secret/environment
+# variable exists but is accidentally configured as an empty string.
+def _model_env(name, default):
+    value = (os.getenv(name) or "").strip()
+    return value or default
+
+
+# Stable/current model IDs.
+GEMINI_MODEL = _model_env("GEMINI_MODEL", "gemini-2.5-flash")
+OPENAI_MODEL = _model_env("OPENAI_MODEL", "gpt-4o-mini")
+GROQ_MODEL = _model_env("GROQ_MODEL", "openai/gpt-oss-20b")
+OPENROUTER_MODEL = _model_env("OPENROUTER_MODEL", "openrouter/free")
+CEREBRAS_MODEL = _model_env("CEREBRAS_MODEL", "gpt-oss-120b")
 
 DEVELOPER_GROUP_ID = (
     int(os.getenv("DEVELOPER_GROUP_ID"))
@@ -83,6 +92,10 @@ OWNER_ID = (
 
 SUDO_USERS = set()
 
+# IDs configured directly in GitHub Actions remain valid even if the web dashboard
+# later removes a dashboard-managed sudo member.
+ENV_SUDO_USERS = set()
+
 # Dashboard sudo credentials are stored as salted PBKDF2 hashes.
 # Format:
 #   SUDO_AUTH_<numeric_user_id> = <salt>$<hash>
@@ -92,6 +105,7 @@ for part in (os.getenv("SUDO_USERS") or "").split(","):
     part = part.strip()
     if part.isdigit():
         SUDO_USERS.add(int(part))
+        ENV_SUDO_USERS.add(int(part))
 
 
 # =========================================================
@@ -246,52 +260,246 @@ def build_invalid_credentials_report(user_id, username, ip_text="unknown"):
 
 
 # =========================================================
-# STATS
+# STATS / TELEMETRY
 # =========================================================
 
 START_TIME = time.time()
+GIST_PUSH_INTERVAL_SECONDS = 30
+TELEMETRY_LOG_WINDOW_SECONDS = 3600
+MAX_TELEMETRY_LOGS = 500
+MAX_ACTIVITY_BUCKETS = 120
+MAX_TRACKED_USERS = 5000
+MAX_TRACKED_GROUPS = 1000
 
-stats = {
-    "total_messages": 0,
-    "active_users": set(),
-    "messages_today": 0,
-    "last_reset_day": time.strftime("%Y-%m-%d"),
-    "toxic_blocked": 0,
-    "ai_replies": 0,
-    "casual_replies": 0,
-    "api_failures": 0,
-    "error_count": 0,
-    "last_error": None,
-    "provider_calls": {
-        "Gemini": 0,
-        "OpenAI": 0,
-        "Groq": 0,
-        "OpenRouter": 0,
-        "Cerebras": 0,
-    },
-    "prompt_tokens": 0,
-    "completion_tokens": 0,
-    "total_tokens": 0,
-}
 
+def _empty_stats():
+    return {
+        "status": "online",
+        "total_messages": 0,
+        "active_users": 0,
+        "messages_today": 0,
+        "last_reset_day": time.strftime("%Y-%m-%d"),
+        "toxic_blocked": 0,
+        "ai_replies": 0,
+        "casual_replies": 0,
+        "api_failures": 0,
+        "error_count": 0,
+        "last_error": None,
+        "provider_calls": {
+            "Gemini": 0,
+            "OpenAI": 0,
+            "Groq": 0,
+            "OpenRouter": 0,
+            "Cerebras": 0,
+        },
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "users": {},
+        "groups": {},
+        "activity": {},
+        "logs": [],
+        "start_time": START_TIME,
+        "last_updated": time.time(),
+    }
+
+
+stats = _empty_stats()
 stats_lock = threading.Lock()
 
-GIST_PUSH_INTERVAL_SECONDS = 30
+
+def _merge_persisted_stats(previous):
+    """Carry cumulative telemetry across GitHub Actions rotation runs."""
+    if not isinstance(previous, dict):
+        return
+
+    cumulative_keys = (
+        "total_messages", "toxic_blocked", "ai_replies", "casual_replies",
+        "api_failures", "error_count", "prompt_tokens", "completion_tokens",
+        "total_tokens",
+    )
+    for key in cumulative_keys:
+        try:
+            stats[key] = int(previous.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            pass
+
+    previous_day = str(previous.get("last_reset_day", ""))
+    if previous_day == time.strftime("%Y-%m-%d"):
+        try:
+            stats["messages_today"] = int(previous.get("messages_today", 0) or 0)
+        except (TypeError, ValueError):
+            stats["messages_today"] = 0
+
+    old_providers = previous.get("provider_calls", {})
+    if isinstance(old_providers, dict):
+        for name in stats["provider_calls"]:
+            try:
+                stats["provider_calls"][name] = int(old_providers.get(name, 0) or 0)
+            except (TypeError, ValueError):
+                pass
+
+    old_users = previous.get("users", {})
+    if isinstance(old_users, dict):
+        for key, value in old_users.items():
+            if len(stats["users"]) >= MAX_TRACKED_USERS:
+                break
+            if isinstance(value, dict):
+                stats["users"][str(key)] = dict(value)
+
+    old_groups = previous.get("groups", {})
+    if isinstance(old_groups, dict):
+        for key, value in old_groups.items():
+            if len(stats["groups"]) >= MAX_TRACKED_GROUPS:
+                break
+            if isinstance(value, dict):
+                stats["groups"][str(key)] = dict(value)
+
+    old_activity = previous.get("activity", [])
+    if isinstance(old_activity, list):
+        for item in old_activity:
+            if not isinstance(item, dict):
+                continue
+            try:
+                ts = float(item.get("ts", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts >= time.time() - TELEMETRY_LOG_WINDOW_SECONDS:
+                stats["activity"][str(int(ts // 60) * 60)] = dict(item)
+
+    old_logs = previous.get("logs", [])
+    if isinstance(old_logs, list):
+        stats["logs"] = [
+            item for item in old_logs
+            if isinstance(item, dict) and float(item.get("ts", 0) or 0) >= time.time() - TELEMETRY_LOG_WINDOW_SECONDS
+        ][-MAX_TELEMETRY_LOGS:]
 
 
-def update_stats(user_id, reply_type="ai"):
+def load_persisted_stats():
+    """Load the last Gist snapshot so rotation does not erase analytics."""
+    if not GIST_ID or not GIST_TOKEN:
+        return
+    try:
+        response = requests.get(
+            f"https://api.github.com/gists/{GIST_ID}",
+            headers={
+                "Authorization": f"Bearer {GIST_TOKEN}",
+                "Accept": "application/vnd.github+json",
+            },
+            timeout=10,
+        )
+        if response.status_code >= 300:
+            print("Telemetry restore skipped:", response.status_code)
+            return
+        item = response.json().get("files", {}).get(GIST_FILENAME)
+        if not item:
+            return
+        previous = json.loads(item.get("content", "") or "{}")
+        with stats_lock:
+            _merge_persisted_stats(previous)
+        print("✅ Previous telemetry restored from Gist.")
+    except Exception as e:
+        print("Telemetry restore error:", repr(e))
+
+
+def _trim_old_logs_locked(now=None):
+    now = now or time.time()
+    cutoff = now - TELEMETRY_LOG_WINDOW_SECONDS
+    stats["logs"] = [
+        item for item in stats["logs"]
+        if float(item.get("ts", 0) or 0) >= cutoff
+    ][-MAX_TELEMETRY_LOGS:]
+
+
+def log_event(level, message):
+    now = time.time()
     with stats_lock:
-        today = time.strftime("%Y-%m-%d")
+        _trim_old_logs_locked(now)
+        stats["logs"].append({
+            "ts": now,
+            "time": datetime.now(ZoneInfo(REPORT_TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "level": str(level).upper(),
+            "message": str(message)[:1000],
+        })
+        stats["logs"] = stats["logs"][-MAX_TELEMETRY_LOGS:]
 
+
+def _record_activity_locked(now):
+    minute_start = int(now // 60) * 60
+    key = str(minute_start)
+    bucket = stats["activity"].setdefault(
+        key,
+        {
+            "ts": minute_start,
+            "label": datetime.fromtimestamp(
+                minute_start, ZoneInfo(REPORT_TIMEZONE)
+            ).strftime("%H:%M"),
+            "messages": 0,
+        },
+    )
+    bucket["messages"] = int(bucket.get("messages", 0)) + 1
+
+    cutoff = now - TELEMETRY_LOG_WINDOW_SECONDS
+    stats["activity"] = {
+        k: v for k, v in stats["activity"].items()
+        if float(v.get("ts", 0) or 0) >= cutoff
+    }
+
+    if len(stats["activity"]) > MAX_ACTIVITY_BUCKETS:
+        keep = sorted(stats["activity"].items(), key=lambda x: float(x[1].get("ts", 0)))[-MAX_ACTIVITY_BUCKETS:]
+        stats["activity"] = dict(keep)
+
+
+def update_stats(user_id, reply_type="ai", chat=None, user=None):
+    now = time.time()
+    today = time.strftime("%Y-%m-%d")
+
+    with stats_lock:
         if today != stats["last_reset_day"]:
             stats["messages_today"] = 0
             stats["last_reset_day"] = today
 
         stats["total_messages"] += 1
         stats["messages_today"] += 1
+        _record_activity_locked(now)
 
         if user_id is not None:
-            stats["active_users"].add(user_id)
+            uid = str(user_id)
+            stats["active_users"] = max(stats["active_users"], len(stats["users"]))
+            if len(stats["users"]) < MAX_TRACKED_USERS or uid in stats["users"]:
+                record = stats["users"].setdefault(uid, {
+                    "id": int(user_id),
+                    "name": "Unknown",
+                    "username": None,
+                    "messages": 0,
+                    "ai_replies": 0,
+                    "casual_replies": 0,
+                    "last_active": None,
+                })
+                if user is not None:
+                    record["name"] = get_display_name(user)
+                    record["username"] = getattr(user, "username", None)
+                record["messages"] = int(record.get("messages", 0)) + 1
+                if reply_type == "ai":
+                    record["ai_replies"] = int(record.get("ai_replies", 0)) + 1
+                elif reply_type == "casual":
+                    record["casual_replies"] = int(record.get("casual_replies", 0)) + 1
+                record["last_active"] = datetime.now(ZoneInfo(REPORT_TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S %Z")
+            stats["active_users"] = len(stats["users"])
+
+        if chat is not None and getattr(chat, "type", None) in ("group", "supergroup"):
+            cid = str(chat.id)
+            if len(stats["groups"]) < MAX_TRACKED_GROUPS or cid in stats["groups"]:
+                group = stats["groups"].setdefault(cid, {
+                    "id": int(chat.id),
+                    "title": getattr(chat, "title", None) or "Untitled group",
+                    "type": getattr(chat, "type", "group"),
+                    "messages": 0,
+                    "last_active": None,
+                })
+                group["title"] = getattr(chat, "title", None) or group.get("title") or "Untitled group"
+                group["messages"] = int(group.get("messages", 0)) + 1
+                group["last_active"] = datetime.now(ZoneInfo(REPORT_TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S %Z")
 
         if reply_type == "ai":
             stats["ai_replies"] += 1
@@ -314,7 +522,7 @@ def record_error(category, error_text=""):
             "error": error_text[:500],
             "time": time.time(),
         }
-
+    log_event("ERROR", f"{category}: {error_text}")
 
 
 def record_ai_usage(provider_name, response):
@@ -327,14 +535,8 @@ def record_ai_usage(provider_name, response):
         "Cerebras API": "Cerebras",
     }.get(provider_name, provider_name)
 
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        usage = getattr(response, "usage_metadata", None)
-
-    prompt_tokens = 0
-    completion_tokens = 0
-    total_tokens = 0
-
+    usage = getattr(response, "usage", None) or getattr(response, "usage_metadata", None)
+    prompt_tokens = completion_tokens = total_tokens = 0
     if usage is not None:
         prompt_tokens = int(
             getattr(usage, "prompt_tokens", None)
@@ -355,22 +557,39 @@ def record_ai_usage(provider_name, response):
         )
 
     with stats_lock:
-        if provider_key not in stats["provider_calls"]:
-            stats["provider_calls"][provider_key] = 0
-        stats["provider_calls"][provider_key] += 1
+        stats["provider_calls"][provider_key] = stats["provider_calls"].get(provider_key, 0) + 1
         stats["prompt_tokens"] += prompt_tokens
         stats["completion_tokens"] += completion_tokens
         stats["total_tokens"] += total_tokens
 
+    log_event("INFO", f"AI provider used: {provider_key}")
+
 
 def snapshot_stats():
+    now = time.time()
     with stats_lock:
+        _trim_old_logs_locked(now)
+        activity = sorted(
+            list(stats["activity"].values()),
+            key=lambda x: float(x.get("ts", 0)),
+        )
+        users = sorted(
+            list(stats["users"].values()),
+            key=lambda x: int(x.get("messages", 0)),
+            reverse=True,
+        )
+        groups = sorted(
+            list(stats["groups"].values()),
+            key=lambda x: int(x.get("messages", 0)),
+            reverse=True,
+        )
         return {
             "status": "online",
-            "uptime_seconds": int(time.time() - START_TIME),
+            "uptime_seconds": int(now - START_TIME),
             "total_messages": stats["total_messages"],
-            "active_users": len(stats["active_users"]),
+            "active_users": len(stats["users"]),
             "messages_today": stats["messages_today"],
+            "last_reset_day": stats["last_reset_day"],
             "toxic_blocked": stats["toxic_blocked"],
             "ai_replies": stats["ai_replies"],
             "casual_replies": stats["casual_replies"],
@@ -381,8 +600,14 @@ def snapshot_stats():
             "prompt_tokens": stats["prompt_tokens"],
             "completion_tokens": stats["completion_tokens"],
             "total_tokens": stats["total_tokens"],
+            "group_count": len(stats["groups"]),
+            "user_count": len(stats["users"]),
+            "activity": activity,
+            "users": users[:500],
+            "groups": groups[:200],
+            "logs": list(stats["logs"]),
             "start_time": START_TIME,
-            "last_updated": time.time(),
+            "last_updated": now,
         }
 
 
@@ -399,7 +624,6 @@ def push_stats_to_gist():
         return
 
     data = snapshot_stats()
-
     try:
         response = requests.patch(
             f"https://api.github.com/gists/{GIST_ID}",
@@ -407,45 +631,70 @@ def push_stats_to_gist():
                 "Authorization": f"Bearer {GIST_TOKEN}",
                 "Accept": "application/vnd.github+json",
             },
-            json={
-                "files": {
-                    GIST_FILENAME: {
-                        "content": json.dumps(data, indent=2)
-                    }
-                }
+            json={"files": {GIST_FILENAME: {"content": json.dumps(data, indent=2)}}},
+            timeout=10,
+        )
+        if response.status_code >= 300:
+            print("Gist error:", response.status_code, response.text[:300])
+        else:
+            log_event("INFO", "Telemetry pushed to Gist")
+    except Exception as e:
+        print("Gist push error:", repr(e))
+        log_event("ERROR", f"Gist push failed: {repr(e)}")
+
+
+def load_sudo_access_from_gist():
+    """Sync web-dashboard sudo IDs into the running bot."""
+    if not GIST_ID or not GIST_TOKEN:
+        return
+    try:
+        response = requests.get(
+            f"https://api.github.com/gists/{GIST_ID}",
+            headers={
+                "Authorization": f"Bearer {GIST_TOKEN}",
+                "Accept": "application/vnd.github+json",
             },
             timeout=10,
         )
-
         if response.status_code >= 300:
-            print(
-                "Gist error:",
-                response.status_code,
-                response.text[:300],
-            )
-
+            return
+        item = response.json().get("files", {}).get("ayush_access.json")
+        if not item:
+            return
+        data = json.loads(item.get("content", "") or "{}")
+        ids = set()
+        for value in data.get("sudo_ids", []):
+            try:
+                ids.add(int(value))
+            except (TypeError, ValueError):
+                pass
+        with stats_lock:
+            SUDO_USERS.clear()
+            SUDO_USERS.update(ENV_SUDO_USERS)
+            SUDO_USERS.update(ids)
+        print(f"✅ Dashboard sudo sync: {len(ids)} dashboard sudo user(s)")
     except Exception as e:
-        print("Gist push error:", repr(e))
+        print("Sudo Gist sync error:", repr(e))
 
 
 def stats_writer_loop():
     elapsed = GIST_PUSH_INTERVAL_SECONDS
-
+    sudo_elapsed = 60
     while True:
         try:
             write_stats_file()
-
             if elapsed >= GIST_PUSH_INTERVAL_SECONDS:
                 push_stats_to_gist()
                 elapsed = 0
-
+            if sudo_elapsed >= 60:
+                load_sudo_access_from_gist()
+                sudo_elapsed = 0
             time.sleep(5)
             elapsed += 5
-
+            sudo_elapsed += 5
         except Exception as e:
             print("Stats writer error:", repr(e))
             time.sleep(5)
-
 
 
 # =========================================================
@@ -1246,9 +1495,9 @@ FALLBACK_REPLIES = {
         "ek important kaam mein busy hu, ruko thoda",
     ],
     "hindi_script": [
-        "अभी थोड़ी बिज़ी हूँ यार, थोड़ी देर में बात करती हूँ",
-        "पढ़ाई में लगी हूँ अभी, थोड़ा रुको",
-        "एक ज़रूरी काम कर रही हूँ, थोड़ी देर में आती हूँ",
+        "abhi thodi busy hu yaar, thodi der mein baat karti hu",
+        "padhai mein lagi hu abhi, thoda ruko",
+        "ek zaroori kaam kar rahi hu, thodi der mein aati hu",
     ],
     "romanized_odia": [
         "mu ebe padhuchi re, tikie pare kahibi",
@@ -1372,7 +1621,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Hey {display_name} 👋",
         )
 
-    update_stats(user_id, "casual")
+    update_stats(user_id, "casual", chat=update.effective_chat, user=update.effective_user)
 
 
 async def welcome_new_members(
@@ -1405,7 +1654,7 @@ async def welcome_new_members(
         await message.reply_text(
             f"Hey {display_name} 👋 Welcome to {group_name}!"
         )
-        update_stats(member.id, "casual")
+        update_stats(member.id, "casual", chat=chat, user=member)
 
 
 async def help_command(
@@ -1828,7 +2077,7 @@ async def handle_message(
         )
 
         last_activity[user_id] = now
-        update_stats(user_id, "casual")
+        update_stats(user_id, "casual", chat=update.effective_chat, user=update.effective_user)
 
         await update.message.reply_text(
             reply,
@@ -1950,7 +2199,7 @@ async def handle_message(
             {"role": "assistant", "content": answer}
         )
 
-        update_stats(user_id, "ai")
+        update_stats(user_id, "ai", chat=update.effective_chat, user=update.effective_user)
 
         await send_long_message(
             update.message,
@@ -2170,10 +2419,19 @@ def main():
     print(f"Groq configured: {bool(GROQ_API_KEY)}")
     print(f"OpenRouter configured: {bool(OPENROUTER_API_KEY)}")
     print(f"Cerebras configured: {bool(CEREBRAS_API_KEY)}")
+    print(f"Gemini model: {GEMINI_MODEL}")
+    print(f"OpenAI model: {OPENAI_MODEL}")
+    print(f"Groq model: {GROQ_MODEL}")
+    print(f"OpenRouter model: {OPENROUTER_MODEL}")
+    print(f"Cerebras model: {CEREBRAS_MODEL}")
     print(f"Owner configured: {OWNER_ID is not None}")
     print(f"Sudo users: {len(SUDO_USERS)}")
     print(f"Developer group configured: {DEVELOPER_GROUP_ID is not None}")
     print(f"Daily report: {DAILY_REPORT_HOUR:02d}:{DAILY_REPORT_MINUTE:02d} {REPORT_TIMEZONE}")
+
+    # Restore cumulative telemetry before starting background writers.
+    load_persisted_stats()
+    log_event("INFO", "Ayush Bot process started")
 
     # Flask health server.
     flask_thread = threading.Thread(
