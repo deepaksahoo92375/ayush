@@ -652,7 +652,11 @@ def detect_language(text):
     )
 
     if odia_chars >= 2:
-        return "odia_script"
+        # Always answer Odia in Romanized Odia (English letters).
+        # Even when the user types Odia Unicode script, do NOT reply in Odia
+        # Unicode. This prevents transliteration mistakes such as
+        # "nanda" -> "ନଣ୍ଡା".
+        return "romanized_odia"
 
     if devanagari_chars >= 2:
         return "hindi_script"
@@ -678,14 +682,21 @@ def detect_language(text):
 
 LANGUAGE_INSTRUCTIONS = {
     "odia_script": (
-        "The user is writing in Odia script. "
-        "Reply entirely in natural Odia Unicode script. "
-        "Do not switch to English or Hindi."
+        "The user is writing in Odia. "
+        "ALWAYS reply in natural romanized Odia using English letters only. "
+        "NEVER output Odia Unicode script. "
+        "Do not transliterate romanized Odia back into Odia Unicode. "
+        "Keep names and spellings natural; for example, write 'Nanda' as 'Nanda', "
+        "not 'ନଣ୍ଡା' or any other Odia-script form."
     ),
     "romanized_odia": (
-        "The user is writing in romanized Odia. "
-        "Reply in romanized Odia using English letters. "
-        "Do not switch to English or Hindi."
+        "The user is writing in Odia. "
+        "ALWAYS reply in natural romanized Odia using English letters only. "
+        "NEVER output Odia Unicode script. "
+        "Do not translate or transliterate romanized Odia into Odia Unicode. "
+        "Use natural spellings such as 'nanda', 'bhala', 'kemiti', 'mu', 'tame'. "
+        "Keep proper names exactly in Latin letters, e.g. 'Nanda' remains 'Nanda'. "
+        "Do not switch to Hindi or formal English."
     ),
     "hindi_script": (
         "The user is writing in Hindi Devanagari. "
@@ -821,28 +832,28 @@ CASUAL_REPLIES = {
         "Ayush Nanda — Baleswar, Odisha ra 🌸",
     ],
     "ସୁପ୍ରଭାତ": [
-        "ସୁପ୍ରଭାତ cutie ☀️😊",
-        "ସୁନ୍ଦର ସକାଳ 🌸",
+        "Suprabhat cutie ☀️😊",
+        "Sundara sakala 🌸",
     ],
     "କେମିତି ଅଛ": [
-        "ମୁଁ ଭଲ ଅଛି 😊 ତୁମେ?",
-        "ବହୁତ ଭଲ hehe 😄",
+        "Mu bhala achi 😊 Tame?",
+        "Bahut bhala hehe 😄",
     ],
     "ଧନ୍ୟବାଦ": [
-        "କୋଇ ବାତ ନାହିଁ 😊",
+        "Kichi katha nahi 😊",
         "Mention not hehe 🌸",
     ],
     "ନମସ୍କାର": [
-        "ନମସ୍କାର 😊🙏",
-        "ନମସ୍କାର hehe 😄",
+        "Namaskar 😊🙏",
+        "Namaskar hehe 😄",
     ],
     "ଶୁଭ ରାତ୍ରି": [
-        "ଶୁଭ ରାତ୍ରି 🌙😊",
-        "ଭଲ ଶୋଇ ଯାଅ hehe 😄",
+        "Shubha ratri 🌙😊",
+        "Bhala soi jaa hehe 😄",
     ],
     "କଣ ଖବର": [
-        "ସବ ଭଲ 😊 ତୁମେ?",
-        "ଠିକ ଅଛି hehe 😄",
+        "Sabu bhala 😊 Tame?",
+        "Thik achi hehe 😄",
     ],
 }
 
@@ -1077,9 +1088,9 @@ FALLBACK_REPLIES = {
         "ek important kama karuchi, tikie ruka",
     ],
     "odia_script": [
-        "ମୁଁ ଏବେ ପଢ଼ୁଛି ରେ, ଟିକିଏ ପରେ କହିବି",
-        "କାମ ରେ ବ୍ୟସ୍ତ ଅଛି, ଟିକିଏ ଅପେକ୍ଷା କର",
-        "ଏକ ଜରୁରୀ କାମ କରୁଛି, ଟିକିଏ ପରେ ଆସିବି",
+        "mu ebe padhuchi re, tikie pare kahibi",
+        "kama re byasta achi, tikie apeksha kara",
+        "eka jaruri kama karuchi, tikie pare asibi",
     ],
 }
 
@@ -1587,6 +1598,9 @@ async def handle_message(
         "You are knowledgeable about wireless communication, radar, antennas, microwaves, telecommunication and engineering. "
         "For technical or study questions, answer accurately and clearly. For casual chat, keep replies short and human. "
         "Use natural Indian English/Hinglish/romanized Odia when appropriate. Mirror the user's language and tone. "
+        "IMPORTANT ODIA RULE: whenever the conversation is in Odia, output ONLY romanized Odia in Latin/English letters. "
+        "NEVER output Odia Unicode characters. For example, 'nanda' must stay 'nanda'/'Nanda' and must never become 'ନଣ୍ଡା' or 'ନନ୍ଦ'. "
+        "Do not perform automatic Odia-script transliteration. "
         "Do not over-explain simple messages. Do not add headings to casual replies. "
         "Do not invent personal experiences, locations, events or relationships beyond the persona information provided. "
         "If asked whether you are an AI, do not lie about the technology; simply say that this Telegram bot is built around Ayush's persona. "
