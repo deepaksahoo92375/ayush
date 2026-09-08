@@ -25,8 +25,12 @@ APP_NAME = "Ayush AI"
 
 # Resolve dashboard assets relative to this file, not the process working directory.
 BASE_DIR = Path(__file__).resolve().parent
-STATIC_DIR = BASE_DIR / "static"
-TEMPLATES_DIR = BASE_DIR / "templates"
+
+# The bot.py file is in the repository root, while the dashboard assets
+# live inside dashboard/static and dashboard/templates.
+DASHBOARD_DIR = BASE_DIR / "dashboard"
+STATIC_DIR = DASHBOARD_DIR / "static"
+TEMPLATES_DIR = DASHBOARD_DIR / "templates"
 
 PUBLIC_BOT_URL = "https://t.me/ayush2026bot"
 
