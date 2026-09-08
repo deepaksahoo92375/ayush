@@ -5,6 +5,7 @@ import secrets
 import hashlib
 import base64
 import urllib.parse
+from pathlib import Path
 from datetime import datetime, timezone
 
 import requests
@@ -21,6 +22,11 @@ from starlette.staticfiles import StaticFiles
 # ============================================================
 
 APP_NAME = "Ayush AI"
+
+# Resolve dashboard assets relative to this file, not the process working directory.
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+TEMPLATES_DIR = BASE_DIR / "templates"
 
 PUBLIC_BOT_URL = "https://t.me/ayush2026bot"
 
@@ -244,15 +250,21 @@ app.add_middleware(
 app.mount(
     "/static",
     StaticFiles(
-        directory="static"
+        directory=str(STATIC_DIR)
     ),
     name="static",
 )
 
 
 templates = Jinja2Templates(
-    directory="templates"
+    directory=str(TEMPLATES_DIR)
 )
+
+if not STATIC_DIR.is_dir():
+    raise RuntimeError(f"Static directory not found: {STATIC_DIR}")
+
+if not TEMPLATES_DIR.is_dir():
+    raise RuntimeError(f"Templates directory not found: {TEMPLATES_DIR}")
 
 
 # ============================================================
@@ -1047,29 +1059,15 @@ def public_home(
 
 
     return templates.TemplateResponse(
-
-        "index.html",
-
-        {
-
-            "request":
-                request,
-
-            "bot_url":
-                PUBLIC_BOT_URL,
-
-            "odia_url":
-                ODIA_GROUP_URL,
-
-            "international_url":
-                INTERNATIONAL_GROUP_URL,
-
-            "error":
-                error,
-
-            "wallpaper":
-                wallpaper,
-        }
+        request=request,
+        name="index.html",
+        context={
+            "bot_url": PUBLIC_BOT_URL,
+            "odia_url": ODIA_GROUP_URL,
+            "international_url": INTERNATIONAL_GROUP_URL,
+            "error": error,
+            "wallpaper": wallpaper,
+        },
     )
 
 
@@ -1368,36 +1366,16 @@ def admin(
 
 
     return templates.TemplateResponse(
-
-        "admin.html",
-
-        {
-
-            "request":
-                request,
-
-            "user":
-                user,
-
-            "stats":
-                stats,
-
-            "access":
-                access,
-
-            "is_owner":
-                is_owner,
-
-            "role":
-                (
-                    "owner"
-                    if is_owner
-                    else "sudo"
-                ),
-
-            "wallpaper":
-                wallpaper,
-        }
+        request=request,
+        name="admin.html",
+        context={
+            "user": user,
+            "stats": stats,
+            "access": access,
+            "is_owner": is_owner,
+            "role": "owner" if is_owner else "sudo",
+            "wallpaper": wallpaper,
+        },
     )
 
 
