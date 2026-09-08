@@ -1,7 +1,11 @@
-python-telegram-bot==21.6
+python-telegram-bot>=21.0,<23.0
 google-genai>=1.0.0
-openai>=1.50.0
-flask>=3.0.0
+openai>=1.0.0
+Flask>=3.0.0
 flask-cors>=4.0.0
-python-dotenv>=1.0.1
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+requests>=2.31.0
+python-dotenv>=1.0.0
 PyJWT[crypto]>=2.8.0
+itsdangerous>=2.2.0
