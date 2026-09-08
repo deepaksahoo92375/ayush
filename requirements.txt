@@ -4,3 +4,4 @@ openai>=1.50.0
 flask>=3.0.0
 flask-cors>=4.0.0
 python-dotenv>=1.0.1
+PyJWT[crypto]>=2.8.0
