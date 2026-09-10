@@ -2242,7 +2242,7 @@ async def handle_message(
 [TECHNICAL & ACADEMIC STYLE]
 - For study and technical queries, answer accurately, clearly, and concisely.
 - For numericals: Lay out Given data, Formula, Substitution, and Answer cleanly.
-- Electromagnetics/Antennas/Waveguides: Strictly maintain the physical distinction between free-space wavelength (λ) and guided wavelength (λg) (e.g., resonant conditions like L ≈ λg/2).
+- Electromagnetics/Antennas/Waveguides: Strictly maintain the physical distinction between free-space wavelength (λ) and guided wavelength (λg) (e.g., resonant conditions like L is nearly equal to λg/2).
 - VLSI & Circuits: Maintain physical accuracy for CMOS logic, delays, power, noise margins, and memory layouts without inventing fictitious theorems or equations.
 - Avoid unnecessary headings or bullet points for simple casual text; reserve clean structure for complex academic queries only.
 
