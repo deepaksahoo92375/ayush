@@ -44,7 +44,8 @@ load_dotenv()
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY_1 = os.getenv("GEMINI_API_KEY_1")
+GEMINI_API_KEY_2 = os.getenv("GEMINI_API_KEY_2")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -59,7 +60,7 @@ def _model_env(name, default):
 
 
 # Stable/current model IDs.
-GEMINI_MODEL = _model_env("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_MODEL = _model_env("GEMINI_MODEL", "gemini-3.5-flash-lite")
 OPENAI_MODEL = _model_env("OPENAI_MODEL", "gpt-4o-mini")
 GROQ_MODEL = _model_env("GROQ_MODEL", "openai/gpt-oss-20b")
 OPENROUTER_MODEL = _model_env("OPENROUTER_MODEL", "openrouter/free")
@@ -116,7 +117,8 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set.")
 
 if not any([
-    GEMINI_API_KEY,
+    GEMINI_API_KEY_1,
+    GEMINI_API_KEY_2,
     OPENAI_API_KEY,
     GROQ_API_KEY,
     OPENROUTER_API_KEY,
@@ -129,9 +131,15 @@ if not any([
 # AI CLIENTS
 # =========================================================
 
-gemini_client = (
-    genai.Client(api_key=GEMINI_API_KEY)
-    if GEMINI_API_KEY
+gemini_client_1 = (
+    genai.Client(api_key=GEMINI_API_KEY_1)
+    if GEMINI_API_KEY_1
+    else None
+)
+
+gemini_client_2 = (
+    genai.Client(api_key=GEMINI_API_KEY_2)
+    if GEMINI_API_KEY_2
     else None
 )
 
@@ -607,7 +615,7 @@ def snapshot_stats():
             "groups": groups[:200],
             "logs": list(stats["logs"]),
             "provider_status": {
-                "Gemini": bool(GEMINI_API_KEY),
+                "Gemini": bool(GEMINI_API_KEY_1 or GEMINI_API_KEY_2),
                 "OpenAI": bool(OPENAI_API_KEY),
                 "OpenRouter": bool(OPENROUTER_API_KEY),
                 "Groq": bool(GROQ_API_KEY),
@@ -722,7 +730,26 @@ def stats_writer_loop():
 # ERROR / DEVELOPER REPORTING
 # =========================================================
 
-USER_ERROR_REPLY = "mora tk deha bhala nahi mu pare message karuchi 🙏"
+USER_ERROR_REPLY = "I'm busy right now."
+
+# Global one-time failure notice. It stays set until any AI/casual response succeeds.
+busy_notice_sent = False
+busy_notice_lock = threading.Lock()
+
+
+def reset_busy_notice():
+    global busy_notice_sent
+    with busy_notice_lock:
+        busy_notice_sent = False
+
+
+def should_send_busy_notice():
+    global busy_notice_sent
+    with busy_notice_lock:
+        if busy_notice_sent:
+            return False
+        busy_notice_sent = True
+        return True
 
 
 # Friendly keyboard shown to regular users.
@@ -731,7 +758,8 @@ def _safe_error_text(error):
     text = str(error)
     secrets = [
         BOT_TOKEN,
-        GEMINI_API_KEY,
+        GEMINI_API_KEY_1,
+        GEMINI_API_KEY_2,
         OPENAI_API_KEY,
         GIST_TOKEN,
         GROQ_API_KEY,
@@ -1430,9 +1458,9 @@ def _messages_to_gemini(messages):
 # GEMINI
 # =========================================================
 
-def _call_gemini(messages, max_tokens=300, temperature=0.8):
-    if not gemini_client:
-        raise RuntimeError("GEMINI_API_KEY not set")
+def _call_gemini_client(client, messages, max_tokens=300, temperature=0.8):
+    if not client:
+        raise RuntimeError("Gemini API key not configured")
 
     system_instruction, contents = _messages_to_gemini(messages)
 
@@ -1444,7 +1472,7 @@ def _call_gemini(messages, max_tokens=300, temperature=0.8):
     if system_instruction:
         config["system_instruction"] = system_instruction
 
-    response = gemini_client.models.generate_content(
+    response = client.models.generate_content(
         model=GEMINI_MODEL,
         contents=contents,
         config=config,
@@ -1457,6 +1485,14 @@ def _call_gemini(messages, max_tokens=300, temperature=0.8):
 
     record_ai_usage("Gemini API", response)
     return text
+
+
+def _call_gemini_1(messages, max_tokens=300, temperature=0.8):
+    return _call_gemini_client(gemini_client_1, messages, max_tokens, temperature)
+
+
+def _call_gemini_2(messages, max_tokens=300, temperature=0.8):
+    return _call_gemini_client(gemini_client_2, messages, max_tokens, temperature)
 
 
 # =========================================================
@@ -1593,12 +1629,13 @@ async def ask_ai(messages, detected_lang="english"):
     """
     Try AI providers in the exact requested order:
 
-      1. Gemini
-      2. OpenAI
-      3. Groq
+      1. Gemini 3.5 Flash-Lite (API key 1)
+      2. Gemini 3.5 Flash-Lite (API key 2)
+      3. OpenAI
       4. OpenRouter free-model router
-      5. Cerebras
-      6. Friendly user-facing error
+      5. Groq
+      6. Cerebras
+      7. One-time friendly user-facing failure notice
 
     A provider failure is isolated; the next provider is tried automatically.
     """
@@ -1607,7 +1644,8 @@ async def ask_ai(messages, detected_lang="english"):
 
     providers = [
         # Keep the primary/fallback order deterministic.
-        ("Gemini API", gemini_client, _call_gemini),
+        ("Gemini API 1", gemini_client_1, _call_gemini_1),
+        ("Gemini API 2", gemini_client_2, _call_gemini_2),
         ("OpenAI API", openai_client, _call_openai),
         ("OpenRouter Free API", openrouter_client, _call_openrouter),
         ("Groq API", groq_client, _call_groq),
@@ -1793,7 +1831,7 @@ async def stats_command(
     providers = data["provider_calls"]
     configured = [
         name for name, enabled in [
-            ("Gemini", bool(GEMINI_API_KEY)),
+            ("Gemini", bool(GEMINI_API_KEY_1 or GEMINI_API_KEY_2)),
             ("OpenAI", bool(OPENAI_API_KEY)),
             ("Groq", bool(GROQ_API_KEY)),
             ("OpenRouter", bool(OPENROUTER_API_KEY)),
@@ -2154,6 +2192,7 @@ async def handle_message(
         await update.message.reply_text(
             reply,
         )
+        reset_busy_notice()
         return
 
     # Clear stale memory after inactivity.
@@ -2278,12 +2317,7 @@ async def handle_message(
         )
 
         if not answer:
-            answer = random.choice(
-                FALLBACK_REPLIES.get(
-                    detected_lang,
-                    FALLBACK_REPLIES["english"],
-                )
-            )
+            raise AIServiceError([("AI response", RuntimeError("Empty AI response"))])
 
         chat_memory[user_id].append(
             {"role": "user", "content": text}
@@ -2298,6 +2332,7 @@ async def handle_message(
             update.message,
             answer,
         )
+        reset_busy_notice()
 
     except AIServiceError as e:
         print("AI service failure:", repr(e))
@@ -2312,9 +2347,8 @@ async def handle_message(
             update=update,
             extra="All configured AI providers failed; no fake AI answer was sent.",
         )
-        await update.message.reply_text(
-            USER_ERROR_REPLY,
-        )
+        if should_send_busy_notice():
+            await update.message.reply_text(USER_ERROR_REPLY)
     except Exception as e:
         print("Message handler error:", repr(e))
         category = classify_error(e)
@@ -2324,9 +2358,8 @@ async def handle_message(
             e,
             update=update,
         )
-        await update.message.reply_text(
-            USER_ERROR_REPLY,
-        )
+        if should_send_busy_notice():
+            await update.message.reply_text(USER_ERROR_REPLY)
 
 
 # =========================================================
@@ -2355,7 +2388,8 @@ async def error_handler(
     # If Telegram gives us the original message, keep the user-facing reply human.
     if isinstance(update, Update) and update.effective_message:
         try:
-            await update.effective_message.reply_text(USER_ERROR_REPLY)
+            if should_send_busy_notice():
+                await update.effective_message.reply_text(USER_ERROR_REPLY)
         except Exception as reply_error:
             print("Could not send user error reply:", repr(reply_error))
 
@@ -2507,7 +2541,8 @@ def main():
     print("🤖 AYUSH BOT STARTING")
     print("==========================================")
 
-    print(f"Gemini configured: {bool(GEMINI_API_KEY)}")
+    print(f"Gemini API key 1 configured: {bool(GEMINI_API_KEY_1)}")
+    print(f"Gemini API key 2 configured: {bool(GEMINI_API_KEY_2)}")
     print(f"OpenAI configured: {bool(OPENAI_API_KEY)}")
     print(f"Groq configured: {bool(GROQ_API_KEY)}")
     print(f"OpenRouter configured: {bool(OPENROUTER_API_KEY)}")
