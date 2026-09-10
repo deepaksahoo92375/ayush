@@ -23,33 +23,20 @@ jobs:
     timeout-minutes: 330
 
     steps:
-
-      # =====================================================
-      # CHECKOUT
-      # =====================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # =====================================================
-      # PYTHON
-      # =====================================================
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
-      # =====================================================
-      # INSTALL DEPENDENCIES
-      # =====================================================
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      # =====================================================
-      # VERIFY BOT
-      # =====================================================
       - name: Verify bot.py
         run: |
           echo "=========================================="
@@ -62,179 +49,93 @@ jobs:
           }
 
           echo "✅ bot.py found"
-
           echo ""
           echo "Bot.py line count:"
           wc -l bot.py
-
           echo ""
           echo "Python version:"
           python --version
-
           echo ""
           echo "Running syntax check..."
-
           python -m py_compile bot.py
-
           echo "✅ bot.py syntax is valid."
 
-      # =====================================================
-      # VERIFY REQUIRED SECRETS
-      # =====================================================
       - name: Verify required secrets
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           DEVELOPER_GROUP_ID: ${{ secrets.DEVELOPER_GROUP_ID }}
           OWNER_ID: ${{ secrets.OWNER_ID }}
-
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
-
           GIST_ID: ${{ secrets.GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-
         run: |
           echo "=========================================="
           echo "CHECKING AYUSH BOT SECRETS"
           echo "=========================================="
 
-          # Required Telegram configuration
-          if [ -z "$BOT_TOKEN" ]; then
-            echo "❌ BOT_TOKEN is missing"
-            exit 1
-          fi
+          if [ -z "$BOT_TOKEN" ]; then echo "❌ BOT_TOKEN is missing"; exit 1; fi
           echo "✅ BOT_TOKEN is present"
-
-          if [ -z "$DEVELOPER_GROUP_ID" ]; then
-            echo "❌ DEVELOPER_GROUP_ID is missing"
-            exit 1
-          fi
+          if [ -z "$DEVELOPER_GROUP_ID" ]; then echo "❌ DEVELOPER_GROUP_ID is missing"; exit 1; fi
           echo "✅ DEVELOPER_GROUP_ID is present"
-
-          if [ -z "$OWNER_ID" ]; then
-            echo "❌ OWNER_ID is missing"
-            exit 1
-          fi
+          if [ -z "$OWNER_ID" ]; then echo "❌ OWNER_ID is missing"; exit 1; fi
           echo "✅ OWNER_ID is present"
 
           echo ""
           echo "AI PROVIDERS:"
-
-          if [ -n "$GEMINI_API_KEY" ]; then
-            echo "✅ Gemini API key present"
-          else
-            echo "⚠️ Gemini API key missing"
-          fi
-
-          if [ -n "$OPENAI_API_KEY" ]; then
-            echo "✅ OpenAI API key present"
-          else
-            echo "⚠️ OpenAI API key missing"
-          fi
-
-          if [ -n "$GROQ_API_KEY" ]; then
-            echo "✅ Groq API key present"
-          else
-            echo "⚠️ Groq API key missing"
-          fi
-
-          if [ -n "$OPENROUTER_API_KEY" ]; then
-            echo "✅ OpenRouter API key present"
-          else
-            echo "⚠️ OpenRouter API key missing"
-          fi
-
-          if [ -n "$CEREBRAS_API_KEY" ]; then
-            echo "✅ Cerebras API key present"
-          else
-            echo "⚠️ Cerebras API key missing"
-          fi
+          if [ -n "$GEMINI_API_KEY_1" ]; then echo "✅ Gemini API key 1 present"; else echo "⚠️ Gemini API key 1 missing"; fi
+          if [ -n "$GEMINI_API_KEY_2" ]; then echo "✅ Gemini API key 2 present"; else echo "⚠️ Gemini API key 2 missing"; fi
+          if [ -n "$OPENAI_API_KEY" ]; then echo "✅ OpenAI API key present"; else echo "⚠️ OpenAI API key missing"; fi
+          if [ -n "$GROQ_API_KEY" ]; then echo "✅ Groq API key present"; else echo "⚠️ Groq API key missing"; fi
+          if [ -n "$OPENROUTER_API_KEY" ]; then echo "✅ OpenRouter API key present"; else echo "⚠️ OpenRouter API key missing"; fi
+          if [ -n "$CEREBRAS_API_KEY" ]; then echo "✅ Cerebras API key present"; else echo "⚠️ Cerebras API key missing"; fi
 
           echo ""
           echo "GIST:"
-
-          if [ -n "$GIST_ID" ]; then
-            echo "✅ GIST_ID present"
-          else
-            echo "⚠️ GIST_ID missing"
-          fi
-
-          if [ -n "$GIST_TOKEN" ]; then
-            echo "✅ GIST_TOKEN present"
-          else
-            echo "⚠️ GIST_TOKEN missing"
-          fi
+          if [ -n "$GIST_ID" ]; then echo "✅ GIST_ID present"; else echo "⚠️ GIST_ID missing"; fi
+          if [ -n "$GIST_TOKEN" ]; then echo "✅ GIST_TOKEN present"; else echo "⚠️ GIST_TOKEN missing"; fi
 
           echo ""
           echo "=========================================="
           echo "SECRET CHECK COMPLETE"
           echo "=========================================="
 
-      # =====================================================
-      # RUN AYUSH BOT
-      # =====================================================
       - name: Run Ayush Bot
         env:
-
-          # -------------------------------------------------
-          # TELEGRAM
-          # -------------------------------------------------
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           DEVELOPER_GROUP_ID: ${{ secrets.DEVELOPER_GROUP_ID }}
           OWNER_ID: ${{ secrets.OWNER_ID }}
           SUDO_USERS: ${{ secrets.SUDO_USERS }}
-
-          # -------------------------------------------------
-          # AI PROVIDERS
-          # -------------------------------------------------
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
-
-          # -------------------------------------------------
-          # AI MODELS
-          # -------------------------------------------------
-          # These are intentionally set directly instead of
-          # depending on possibly-empty GitHub secrets.
-
-          GEMINI_MODEL: "gemini-2.5-flash"
+          GEMINI_MODEL: "gemini-3.5-flash-lite"
           OPENAI_MODEL: "gpt-4o-mini"
           GROQ_MODEL: "openai/gpt-oss-20b"
           OPENROUTER_MODEL: "openrouter/free"
           CEREBRAS_MODEL: "gpt-oss-120b"
-
-          # -------------------------------------------------
-          # GITHUB GIST TELEMETRY
-          # -------------------------------------------------
           GIST_ID: ${{ secrets.GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_FILENAME: "ayush_stats.json"
-
-          # -------------------------------------------------
-          # PYTHON
-          # -------------------------------------------------
           PYTHONUNBUFFERED: "1"
-
         run: |
           echo "=========================================="
           echo "🤖 AYUSH BOT STARTING"
           echo "=========================================="
-
           echo ""
           echo "Python:"
           python --version
-
           echo ""
           echo "Working directory:"
           pwd
-
           echo ""
           echo "Launching bot.py..."
           echo ""
-
           python -u bot.py
