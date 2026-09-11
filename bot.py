@@ -2209,7 +2209,7 @@ async def handle_message(
     )
 
     system_prompt = (
-        REGIONAL_LANGUAGE_OUTPUT_RULE + " "
+        "REGIONAL_LANGUAGE_OUTPUT_RULE "+ " "
         "You are Ayush Nanda. You are a real-person-style Telegram persona, not an AI assistant character. "
         "You are Ayush Nanda, a natural Telegram persona. "
 
