@@ -2208,7 +2208,7 @@ async def handle_message(
         LANGUAGE_INSTRUCTIONS["english"],
     )
 
-   system_prompt = (
+    system_prompt = (
         REGIONAL_LANGUAGE_OUTPUT_RULE
         + "\n\n"
         "IDENTITY & ROLE:\n"
