@@ -2074,19 +2074,62 @@ async def handle_photo(
 
     photo = update.message.photo[-1]
 
-    # Download the highest-resolution Telegram image
-    file = await context.bot.get_file(photo.file_id)
+    try:
+        file = await context.bot.get_file(photo.file_id)
+        image_bytes = await file.download_as_bytearray()
 
-    image_bytes = await file.download_as_bytearray()
+        # Prefer the first available Gemini client
+        chosen_client = gemini_client_1 or gemini_client_2
+        if chosen_client is None:
+            await update.message.reply_text(
+                "Image vision is not available because no Gemini API key is configured."
+            )
+            return
 
-    # TODO:
-    # Send image_bytes + caption to your vision-capable Gemini model
-    # and return the generated answer here.
+        caption = (update.message.caption or "").strip()
+        prompt = (
+            "Look at this image carefully. "
+            "If there is text, read it accurately. "
+            "If it contains a question, diagram, chart, equation, screenshot, or handwritten content, "
+            "answer it clearly and correctly. "
+            "If the image is unclear, say what part is unclear instead of guessing."
+        )
+        if caption:
+            prompt += f"\nUser question: {caption}"
 
-    await update.message.reply_text(
-        "I received the image 👍\n"
-        "Image vision/OCR processing is not connected yet."
-    )
+        # Telegram photos are usually JPEG; use JPEG for compatibility.
+        image_part = types.Part.from_bytes(
+            data=bytes(image_bytes),
+            mime_type="image/jpeg",
+        )
+
+        response = chosen_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                image_part,
+                prompt,
+            ],
+        )
+
+        answer = (getattr(response, "text", None) or "").strip()
+        if not answer:
+            answer = "I could not read the image clearly. Please send a clearer one or type the question."
+
+        await send_long_message(update.message, answer)
+
+    except Exception as e:
+        print("Image processing failed:", repr(e))
+        category = classify_error(e)
+        await report_issue(
+            context.bot,
+            category,
+            e,
+            update=update,
+            extra="Image vision request failed.",
+        )
+        await update.message.reply_text(
+            "I couldn't process the image right now. Please try again with a clearer image."
+        )
 
 async def handle_message(
     update: Update,
