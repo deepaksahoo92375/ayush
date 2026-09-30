@@ -396,7 +396,7 @@ def load_persisted_stats():
             },
             timeout=10,
         )
-        if response.status_code >= 300:
+        if response.status_code >= 3000:
             print("Telemetry restore skipped:", response.status_code)
             return
         item = response.json().get("files", {}).get(GIST_FILENAME)
@@ -663,8 +663,8 @@ def push_stats_to_gist():
             json={"files": {GIST_FILENAME: {"content": json.dumps(data, indent=2)}}},
             timeout=10,
         )
-        if response.status_code >= 300:
-            print("Gist error:", response.status_code, response.text[:300])
+        if response.status_code >= 3000:
+            print("Gist error:", response.status_code, response.text[:3000])
         else:
             log_event("INFO", "Telemetry pushed to Gist")
     except Exception as e:
@@ -685,7 +685,7 @@ def load_sudo_access_from_gist():
             },
             timeout=10,
         )
-        if response.status_code >= 300:
+        if response.status_code >= 3000:
             return
         item = response.json().get("files", {}).get("ayush_access.json")
         if not item:
@@ -1458,7 +1458,7 @@ def _messages_to_gemini(messages):
 # GEMINI
 # =========================================================
 
-def _call_gemini_client(client, messages, max_tokens=300, temperature=0.8):
+def _call_gemini_client(client, messages, max_tokens=3000, temperature=0.8):
     if not client:
         raise RuntimeError("Gemini API key not configured")
 
@@ -1487,11 +1487,11 @@ def _call_gemini_client(client, messages, max_tokens=300, temperature=0.8):
     return text
 
 
-def _call_gemini_1(messages, max_tokens=300, temperature=0.8):
+def _call_gemini_1(messages, max_tokens=3000, temperature=0.8):
     return _call_gemini_client(gemini_client_1, messages, max_tokens, temperature)
 
 
-def _call_gemini_2(messages, max_tokens=300, temperature=0.8):
+def _call_gemini_2(messages, max_tokens=3000, temperature=0.8):
     return _call_gemini_client(gemini_client_2, messages, max_tokens, temperature)
 
 
@@ -1499,7 +1499,7 @@ def _call_gemini_2(messages, max_tokens=300, temperature=0.8):
 # OPENAI
 # =========================================================
 
-def _call_openai(messages, max_tokens=300, temperature=0.8):
+def _call_openai(messages, max_tokens=3000, temperature=0.8):
     if not openai_client:
         raise RuntimeError("OPENAI_API_KEY not set")
 
@@ -1525,7 +1525,7 @@ def _call_openai(messages, max_tokens=300, temperature=0.8):
 # GROQ
 # =========================================================
 
-def _call_groq(messages, max_tokens=300, temperature=0.8):
+def _call_groq(messages, max_tokens=3000, temperature=0.8):
     if not groq_client:
         raise RuntimeError("GROQ_API_KEY not set")
 
@@ -1547,7 +1547,7 @@ def _call_groq(messages, max_tokens=300, temperature=0.8):
 # OPENROUTER FREE
 # =========================================================
 
-def _call_openrouter(messages, max_tokens=300, temperature=0.8):
+def _call_openrouter(messages, max_tokens=3000, temperature=0.8):
     if not openrouter_client:
         raise RuntimeError("OPENROUTER_API_KEY not set")
 
@@ -1569,7 +1569,7 @@ def _call_openrouter(messages, max_tokens=300, temperature=0.8):
 # CEREBRAS
 # =========================================================
 
-def _call_cerebras(messages, max_tokens=300, temperature=0.8):
+def _call_cerebras(messages, max_tokens=3000, temperature=0.8):
     if not cerebras_client:
         raise RuntimeError("CEREBRAS_API_KEY not set")
 
@@ -1660,7 +1660,7 @@ async def ask_ai(messages, detected_lang="english"):
         try:
             result = await loop.run_in_executor(
                 None,
-                partial(function, messages, 300, 0.8),
+                partial(function, messages, 3000, 0.8),
             )
             print(f"✅ AI provider used: {name}")
             return result
