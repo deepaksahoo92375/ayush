@@ -1614,6 +1614,103 @@ FALLBACK_REPLIES = {
 }
 
 
+
+# =========================================================
+# TELEGRAM MATH / FORMULA NORMALIZATION
+# =========================================================
+
+_SUP = str.maketrans({
+    "0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹",
+    "+":"⁺","-":"⁻","=":"⁼","(":"⁽",")":"⁾",
+    "a":"ᵃ","b":"ᵇ","c":"ᶜ","d":"ᵈ","e":"ᵉ","f":"ᶠ","g":"ᵍ","h":"ʰ","i":"ⁱ",
+    "j":"ʲ","k":"ᵏ","l":"ˡ","m":"ᵐ","n":"ⁿ","o":"ᵒ","p":"ᵖ","r":"ʳ","s":"ˢ",
+    "t":"ᵗ","u":"ᵘ","v":"ᵛ","w":"ʷ","x":"ˣ","y":"ʸ","z":"ᶻ",
+})
+_SUB = str.maketrans({
+    "0":"₀","1":"₁","2":"₂","3":"₃","4":"₄","5":"₅","6":"₆","7":"₇","8":"₈","9":"₉",
+    "+":"₊","-":"₋","=":"₌","(":"₍",")":"₎",
+    "a":"ₐ","e":"ₑ","h":"ₕ","i":"ᵢ","j":"ⱼ","k":"ₖ","l":"ₗ","m":"ₘ","n":"ₙ",
+    "o":"ₒ","p":"ₚ","r":"ᵣ","s":"ₛ","t":"ₜ","u":"ᵤ","v":"ᵥ","x":"ₓ",
+})
+
+def _sup(value):
+    return "".join(ch.translate(_SUP) for ch in value.strip())
+
+def _sub(value):
+    return "".join(ch.translate(_SUB) for ch in value.strip())
+
+def normalize_math_output(text):
+    """Convert common AI-generated LaTeX into Telegram-friendly Unicode/plain text."""
+    if not text:
+        return text
+
+    result = text
+
+    # Remove math delimiters.
+    result = result.replace("$$", "")
+    result = result.replace(r"\[", "").replace(r"\]", "")
+    result = result.replace(r"\(", "").replace(r"\)", "")
+
+    # Common LaTeX symbols.
+    symbols = {
+        r"\times": "×", r"\cdot": "·", r"\div": "÷", r"\pm": "±",
+        r"\leq": "≤", r"\le": "≤", r"\geq": "≥", r"\ge": "≥",
+        r"\neq": "≠", r"\approx": "≈", r"\sim": "∼", r"\infty": "∞",
+        r"\lambda": "λ", r"\Lambda": "Λ", r"\epsilon": "ε",
+        r"\varepsilon": "ε", r"\mu": "μ", r"\sigma": "σ",
+        r"\rho": "ρ", r"\theta": "θ", r"\phi": "φ", r"\omega": "ω",
+        r"\Omega": "Ω", r"\Delta": "Δ", r"\Gamma": "Γ",
+        r"\alpha": "α", r"\beta": "β", r"\gamma": "γ",
+        r"\eta": "η", r"\nu": "ν", r"\tau": "τ", r"\pi": "π",
+        r"\cdots": "⋯", r"\ldots": "…", r"\,": " ", r"\;": " ", r"\!": "",
+    }
+    for old, new in symbols.items():
+        result = result.replace(old, new)
+
+    # \text{...}, \mathrm{...}, etc.
+    for command in ("text", "mathrm", "mathbf", "mathit", "operatorname"):
+        result = re.sub(
+            r"\\" + command + r"\{([^{}]*)\}",
+            lambda m: m.group(1),
+            result,
+        )
+
+    # Fractions.
+    frac = re.compile(r"\\frac\{([^{}]*)\}\{([^{}]*)\}")
+    previous = None
+    while previous != result:
+        previous = result
+        result = frac.sub(r"\1 / \2", result)
+
+    # Square roots.
+    result = re.sub(
+        r"\\sqrt\{([^{}]*)\}",
+        lambda m: "√(" + m.group(1) + ")",
+        result,
+    )
+    result = result.replace(r"\sqrt", "√")
+
+    # Braced powers/subscripts.
+    result = re.sub(r"\^\{([^{}]+)\}", lambda m: _sup(m.group(1)), result)
+    result = re.sub(r"_\{([^{}]+)\}", lambda m: _sub(m.group(1)), result)
+
+    # Single-character powers/subscripts.
+    result = re.sub(r"\^([0-9A-Za-z+\-=()])", lambda m: _sup(m.group(1)), result)
+    result = re.sub(r"_([0-9A-Za-z])", lambda m: _sub(m.group(1)), result)
+
+    # \left and \right.
+    result = result.replace(r"\left", "").replace(r"\right", "")
+
+    # Remove leftover LaTeX backslashes for common commands, while preserving ordinary text.
+    result = re.sub(r"\\([A-Za-z]+)", r"\1", result)
+
+    # Light whitespace cleanup.
+    result = re.sub(r"[ \t]{2,}", " ", result)
+    result = re.sub(r"\n[ \t]+", "\n", result)
+
+    return result.strip()
+
+
 # =========================================================
 # AI CHAT
 # =========================================================
@@ -1663,6 +1760,7 @@ async def ask_ai(messages, detected_lang="english"):
                 None,
                 partial(function, messages, 3000, 0.8),
             )
+            result = normalize_math_output(result)
             print(f"✅ AI provider used: {name}")
             return result
         except Exception as e:
@@ -2366,6 +2464,15 @@ async def handle_message(
         "- Do not generate technical/API failure messages yourself; application code handles those separately.\n"
         "Simply answer the user's latest message naturally.\n\n"
         f"{language_instruction}\n\n"
+        "STRICT FINAL FORMULA FORMAT:\n"
+        "- Never output LaTeX in the final answer.\n"
+        "- Never use $$...$$, $...$, \\(...\\), or \\[...\\].\n"
+        "- Never use commands such as \\frac, \\sqrt, \\times, \\text, \\sum, or \\lambda.\n"
+        "- Write formulas as normal Telegram text using Unicode symbols.\n"
+        "- Use superscripts/subscripts where useful: x², xₙ, Eᵦ, N₀, Pₑ, λg, εᵣ.\n"
+        "- Examples: BER = 38 / 10⁷ = 3.8 × 10⁻⁶; Pₑ = Q(√(2Eᵦ/N₀)); λ = c / f.\n"
+        "- Put important equations on separate lines.\n"
+        "- For fractions that cannot be represented clearly, use numerator / denominator.\n\n"
         f"Current mode: {mode}."
        " MATHEMATICAL FORMATTING RULE:"
         "- Do NOT use LaTeX delimiters such as $$...$$, $...$, \(...\), or \[...\]."
