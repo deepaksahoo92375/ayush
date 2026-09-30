@@ -16,6 +16,7 @@ from collections import defaultdict, deque
 import requests
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 from openai import OpenAI
 from flask import Flask, jsonify
 from flask_cors import CORS
