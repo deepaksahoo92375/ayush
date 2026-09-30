@@ -16,6 +16,7 @@ from collections import defaultdict, deque
 import requests
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 from openai import OpenAI
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -396,7 +397,7 @@ def load_persisted_stats():
             },
             timeout=10,
         )
-        if response.status_code >= 300:
+        if response.status_code >= 3000:
             print("Telemetry restore skipped:", response.status_code)
             return
         item = response.json().get("files", {}).get(GIST_FILENAME)
@@ -663,8 +664,8 @@ def push_stats_to_gist():
             json={"files": {GIST_FILENAME: {"content": json.dumps(data, indent=2)}}},
             timeout=10,
         )
-        if response.status_code >= 300:
-            print("Gist error:", response.status_code, response.text[:300])
+        if response.status_code >= 3000:
+            print("Gist error:", response.status_code, response.text[:3000])
         else:
             log_event("INFO", "Telemetry pushed to Gist")
     except Exception as e:
@@ -685,7 +686,7 @@ def load_sudo_access_from_gist():
             },
             timeout=10,
         )
-        if response.status_code >= 300:
+        if response.status_code >= 3000:
             return
         item = response.json().get("files", {}).get("ayush_access.json")
         if not item:
@@ -1458,7 +1459,7 @@ def _messages_to_gemini(messages):
 # GEMINI
 # =========================================================
 
-def _call_gemini_client(client, messages, max_tokens=300, temperature=0.8):
+def _call_gemini_client(client, messages, max_tokens=3000, temperature=0.8):
     if not client:
         raise RuntimeError("Gemini API key not configured")
 
@@ -1487,11 +1488,11 @@ def _call_gemini_client(client, messages, max_tokens=300, temperature=0.8):
     return text
 
 
-def _call_gemini_1(messages, max_tokens=300, temperature=0.8):
+def _call_gemini_1(messages, max_tokens=3000, temperature=0.8):
     return _call_gemini_client(gemini_client_1, messages, max_tokens, temperature)
 
 
-def _call_gemini_2(messages, max_tokens=300, temperature=0.8):
+def _call_gemini_2(messages, max_tokens=3000, temperature=0.8):
     return _call_gemini_client(gemini_client_2, messages, max_tokens, temperature)
 
 
@@ -1499,7 +1500,7 @@ def _call_gemini_2(messages, max_tokens=300, temperature=0.8):
 # OPENAI
 # =========================================================
 
-def _call_openai(messages, max_tokens=300, temperature=0.8):
+def _call_openai(messages, max_tokens=3000, temperature=0.8):
     if not openai_client:
         raise RuntimeError("OPENAI_API_KEY not set")
 
@@ -1525,7 +1526,7 @@ def _call_openai(messages, max_tokens=300, temperature=0.8):
 # GROQ
 # =========================================================
 
-def _call_groq(messages, max_tokens=300, temperature=0.8):
+def _call_groq(messages, max_tokens=3000, temperature=0.8):
     if not groq_client:
         raise RuntimeError("GROQ_API_KEY not set")
 
@@ -1547,7 +1548,7 @@ def _call_groq(messages, max_tokens=300, temperature=0.8):
 # OPENROUTER FREE
 # =========================================================
 
-def _call_openrouter(messages, max_tokens=300, temperature=0.8):
+def _call_openrouter(messages, max_tokens=3000, temperature=0.8):
     if not openrouter_client:
         raise RuntimeError("OPENROUTER_API_KEY not set")
 
@@ -1569,7 +1570,7 @@ def _call_openrouter(messages, max_tokens=300, temperature=0.8):
 # CEREBRAS
 # =========================================================
 
-def _call_cerebras(messages, max_tokens=300, temperature=0.8):
+def _call_cerebras(messages, max_tokens=3000, temperature=0.8):
     if not cerebras_client:
         raise RuntimeError("CEREBRAS_API_KEY not set")
 
@@ -1611,6 +1612,103 @@ FALLBACK_REPLIES = {
         "ek important kama karuchi, tikie ruka",
     ],
 }
+
+
+
+# =========================================================
+# TELEGRAM MATH / FORMULA NORMALIZATION
+# =========================================================
+
+_SUP = str.maketrans({
+    "0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹",
+    "+":"⁺","-":"⁻","=":"⁼","(":"⁽",")":"⁾",
+    "a":"ᵃ","b":"ᵇ","c":"ᶜ","d":"ᵈ","e":"ᵉ","f":"ᶠ","g":"ᵍ","h":"ʰ","i":"ⁱ",
+    "j":"ʲ","k":"ᵏ","l":"ˡ","m":"ᵐ","n":"ⁿ","o":"ᵒ","p":"ᵖ","r":"ʳ","s":"ˢ",
+    "t":"ᵗ","u":"ᵘ","v":"ᵛ","w":"ʷ","x":"ˣ","y":"ʸ","z":"ᶻ",
+})
+_SUB = str.maketrans({
+    "0":"₀","1":"₁","2":"₂","3":"₃","4":"₄","5":"₅","6":"₆","7":"₇","8":"₈","9":"₉",
+    "+":"₊","-":"₋","=":"₌","(":"₍",")":"₎",
+    "a":"ₐ","e":"ₑ","h":"ₕ","i":"ᵢ","j":"ⱼ","k":"ₖ","l":"ₗ","m":"ₘ","n":"ₙ",
+    "o":"ₒ","p":"ₚ","r":"ᵣ","s":"ₛ","t":"ₜ","u":"ᵤ","v":"ᵥ","x":"ₓ",
+})
+
+def _sup(value):
+    return "".join(ch.translate(_SUP) for ch in value.strip())
+
+def _sub(value):
+    return "".join(ch.translate(_SUB) for ch in value.strip())
+
+def normalize_math_output(text):
+    """Convert common AI-generated LaTeX into Telegram-friendly Unicode/plain text."""
+    if not text:
+        return text
+
+    result = text
+
+    # Remove math delimiters.
+    result = result.replace("$$", "")
+    result = result.replace(r"\[", "").replace(r"\]", "")
+    result = result.replace(r"\(", "").replace(r"\)", "")
+
+    # Common LaTeX symbols.
+    symbols = {
+        r"\times": "×", r"\cdot": "·", r"\div": "÷", r"\pm": "±",
+        r"\leq": "≤", r"\le": "≤", r"\geq": "≥", r"\ge": "≥",
+        r"\neq": "≠", r"\approx": "≈", r"\sim": "∼", r"\infty": "∞",
+        r"\lambda": "λ", r"\Lambda": "Λ", r"\epsilon": "ε",
+        r"\varepsilon": "ε", r"\mu": "μ", r"\sigma": "σ",
+        r"\rho": "ρ", r"\theta": "θ", r"\phi": "φ", r"\omega": "ω",
+        r"\Omega": "Ω", r"\Delta": "Δ", r"\Gamma": "Γ",
+        r"\alpha": "α", r"\beta": "β", r"\gamma": "γ",
+        r"\eta": "η", r"\nu": "ν", r"\tau": "τ", r"\pi": "π",
+        r"\cdots": "⋯", r"\ldots": "…", r"\,": " ", r"\;": " ", r"\!": "",
+    }
+    for old, new in symbols.items():
+        result = result.replace(old, new)
+
+    # \text{...}, \mathrm{...}, etc.
+    for command in ("text", "mathrm", "mathbf", "mathit", "operatorname"):
+        result = re.sub(
+            r"\\" + command + r"\{([^{}]*)\}",
+            lambda m: m.group(1),
+            result,
+        )
+
+    # Fractions.
+    frac = re.compile(r"\\frac\{([^{}]*)\}\{([^{}]*)\}")
+    previous = None
+    while previous != result:
+        previous = result
+        result = frac.sub(r"\1 / \2", result)
+
+    # Square roots.
+    result = re.sub(
+        r"\\sqrt\{([^{}]*)\}",
+        lambda m: "√(" + m.group(1) + ")",
+        result,
+    )
+    result = result.replace(r"\sqrt", "√")
+
+    # Braced powers/subscripts.
+    result = re.sub(r"\^\{([^{}]+)\}", lambda m: _sup(m.group(1)), result)
+    result = re.sub(r"_\{([^{}]+)\}", lambda m: _sub(m.group(1)), result)
+
+    # Single-character powers/subscripts.
+    result = re.sub(r"\^([0-9A-Za-z+\-=()])", lambda m: _sup(m.group(1)), result)
+    result = re.sub(r"_([0-9A-Za-z])", lambda m: _sub(m.group(1)), result)
+
+    # \left and \right.
+    result = result.replace(r"\left", "").replace(r"\right", "")
+
+    # Remove leftover LaTeX backslashes for common commands, while preserving ordinary text.
+    result = re.sub(r"\\([A-Za-z]+)", r"\1", result)
+
+    # Light whitespace cleanup.
+    result = re.sub(r"[ \t]{2,}", " ", result)
+    result = re.sub(r"\n[ \t]+", "\n", result)
+
+    return result.strip()
 
 
 # =========================================================
@@ -1660,8 +1758,9 @@ async def ask_ai(messages, detected_lang="english"):
         try:
             result = await loop.run_in_executor(
                 None,
-                partial(function, messages, 300, 0.8),
+                partial(function, messages, 3000, 0.8),
             )
+            result = normalize_math_output(result)
             print(f"✅ AI provider used: {name}")
             return result
         except Exception as e:
@@ -2065,6 +2164,71 @@ async def sudolist(
 # =========================================================
 # MESSAGE HANDLER
 # =========================================================
+async def handle_photo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.effective_user or not update.message:
+        return
+
+    photo = update.message.photo[-1]
+
+    try:
+        file = await context.bot.get_file(photo.file_id)
+        image_bytes = await file.download_as_bytearray()
+
+        # Prefer the first available Gemini client
+        chosen_client = gemini_client_1 or gemini_client_2
+        if chosen_client is None:
+            await update.message.reply_text(
+                "Image vision is not available because no Gemini API key is configured."
+            )
+            return
+
+        caption = (update.message.caption or "").strip()
+        prompt = (
+            "Look at this image carefully. "
+            "If there is text, read it accurately. "
+            "If it contains a question, diagram, chart, equation, screenshot, or handwritten content, "
+            "answer it clearly and correctly. "
+            "If the image is unclear, say what part is unclear instead of guessing."
+        )
+        if caption:
+            prompt += f"\nUser question: {caption}"
+
+        # Telegram photos are usually JPEG; use JPEG for compatibility.
+        image_part = types.Part.from_bytes(
+            data=bytes(image_bytes),
+            mime_type="image/jpeg",
+        )
+
+        response = chosen_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                image_part,
+                prompt,
+            ],
+        )
+
+        answer = (getattr(response, "text", None) or "").strip()
+        if not answer:
+            answer = "I could not read the image clearly. Please send a clearer one or type the question."
+
+        await send_long_message(update.message, answer)
+
+    except Exception as e:
+        print("Image processing failed:", repr(e))
+        category = classify_error(e)
+        await report_issue(
+            context.bot,
+            category,
+            e,
+            update=update,
+            extra="Image vision request failed.",
+        )
+        await update.message.reply_text(
+            "I couldn't process the image right now. Please try again with a clearer image."
+        )
 
 async def handle_message(
     update: Update,
@@ -2300,7 +2464,49 @@ async def handle_message(
         "- Do not generate technical/API failure messages yourself; application code handles those separately.\n"
         "Simply answer the user's latest message naturally.\n\n"
         f"{language_instruction}\n\n"
+        "STRICT FINAL FORMULA FORMAT:\n"
+        "- Never output LaTeX in the final answer.\n"
+        "- Never use $$...$$, $...$, \\(...\\), or \\[...\\].\n"
+        "- Never use commands such as \\frac, \\sqrt, \\times, \\text, \\sum, or \\lambda.\n"
+        "- Write formulas as normal Telegram text using Unicode symbols.\n"
+        "- Use superscripts/subscripts where useful: x², xₙ, Eᵦ, N₀, Pₑ, λg, εᵣ.\n"
+        "- Examples: BER = 38 / 10⁷ = 3.8 × 10⁻⁶; Pₑ = Q(√(2Eᵦ/N₀)); λ = c / f.\n"
+        "- Put important equations on separate lines.\n"
+        "- For fractions that cannot be represented clearly, use numerator / denominator.\n\n"
         f"Current mode: {mode}."
+       " MATHEMATICAL FORMATTING RULE:"
+        "- Do NOT use LaTeX delimiters such as $$...$$, $...$, \(...\), or \[...\]."
+        "- Do NOT use LaTeX commands such as \frac, \sqrt, \times, \text, \sum, etc."
+        "- Do NOT put mathematical formulas inside code blocks."
+        "- Write mathematical expressions using normal Unicode symbols whenever possible."
+        "- Use superscript and subscript Unicode characters where appropriate."
+        "- Keep equations readable in Telegram plain text."
+        "- Use ×, ÷, √, ≈, ≤, ≥, ±, ∞, Ω, λ, π and other Unicode mathematical symbols when appropriate."
+        "- For multi-step numerical problems, write each equation on its own line."
+        "IMAGE / OCR QUESTION HANDLING:"
+
+        "When the user sends an image containing a question, problem, screenshot, handwritten question, numerical problem, diagram, graph, circuit, antenna design, waveform, or technical content:"
+        "- Read and interpret the contents of the image before answering."
+        "- Extract the relevant question/text, including numerical values, symbols, equations, labels, units, and important diagram information."
+        "- Use the visual information from the image as the primary source for answering."
+        "- Solve the question directly based on what is visible in the image."
+        "- Do not ask the user to type the question again unless the image is genuinely unreadable."
+        "- For mathematical and engineering questions, carefully preserve subscripts, superscripts, units, signs, decimal points, and symbols."
+        "- If the image contains a diagram, use the diagram information in the reasoning."
+        "- If a portion of the image is unclear, explicitly mention the unclear portion rather than guessing."
+        "- If the image contains multiple questions, identify and answer them separately."
+        "- Maintain the same Ayush personality and technical explanation style."
+        "- Do NOT output LaTeX such as $$...$$, \frac, \sqrt, \times, etc."
+        "- Use Unicode mathematical notation instead:"
+         " Pₑ, Eᵦ, N₀, λ, εᵣ, √, ×, ÷, ≈, ≤, ≥, Ω, π, etc."
+        "- For numerical problems, preferably use:"
+        "-  Given:"
+        "- Formula:"
+        "- Substitution:"
+        "- Calculation:"
+        "- Answer:"
+        "- Keep the final response suitable for Telegram."
+        
     )
 
     messages = [
@@ -2661,6 +2867,12 @@ def main():
         MessageHandler(
             filters.StatusUpdate.NEW_CHAT_MEMBERS,
             welcome_new_members,
+        )
+    )
+    application.add_handler(
+    MessageHandler(
+        filters.PHOTO,
+        handle_photo,
         )
     )
 
