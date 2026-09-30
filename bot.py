@@ -2065,6 +2065,28 @@ async def sudolist(
 # =========================================================
 # MESSAGE HANDLER
 # =========================================================
+async def handle_photo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.effective_user or not update.message:
+        return
+
+    photo = update.message.photo[-1]
+
+    # Download the highest-resolution Telegram image
+    file = await context.bot.get_file(photo.file_id)
+
+    image_bytes = await file.download_as_bytearray()
+
+    # TODO:
+    # Send image_bytes + caption to your vision-capable Gemini model
+    # and return the generated answer here.
+
+    await update.message.reply_text(
+        "I received the image 👍\n"
+        "Image vision/OCR processing is not connected yet."
+    )
 
 async def handle_message(
     update: Update,
@@ -2301,6 +2323,39 @@ async def handle_message(
         "Simply answer the user's latest message naturally.\n\n"
         f"{language_instruction}\n\n"
         f"Current mode: {mode}."
+       " MATHEMATICAL FORMATTING RULE:"
+        "- Do NOT use LaTeX delimiters such as $$...$$, $...$, \(...\), or \[...\]."
+        "- Do NOT use LaTeX commands such as \frac, \sqrt, \times, \text, \sum, etc."
+        "- Do NOT put mathematical formulas inside code blocks."
+        "- Write mathematical expressions using normal Unicode symbols whenever possible."
+        "- Use superscript and subscript Unicode characters where appropriate."
+        "- Keep equations readable in Telegram plain text."
+        "- Use ×, ÷, √, ≈, ≤, ≥, ±, ∞, Ω, λ, π and other Unicode mathematical symbols when appropriate."
+        "- For multi-step numerical problems, write each equation on its own line."
+        "IMAGE / OCR QUESTION HANDLING:"
+
+        "When the user sends an image containing a question, problem, screenshot, handwritten question, numerical problem, diagram, graph, circuit, antenna design, waveform, or technical content:"
+        "- Read and interpret the contents of the image before answering."
+        "- Extract the relevant question/text, including numerical values, symbols, equations, labels, units, and important diagram information."
+        "- Use the visual information from the image as the primary source for answering."
+        "- Solve the question directly based on what is visible in the image."
+        "- Do not ask the user to type the question again unless the image is genuinely unreadable."
+        "- For mathematical and engineering questions, carefully preserve subscripts, superscripts, units, signs, decimal points, and symbols."
+        "- If the image contains a diagram, use the diagram information in the reasoning."
+        "- If a portion of the image is unclear, explicitly mention the unclear portion rather than guessing."
+        "- If the image contains multiple questions, identify and answer them separately."
+        "- Maintain the same Ayush personality and technical explanation style."
+        "- Do NOT output LaTeX such as $$...$$, \frac, \sqrt, \times, etc."
+        "- Use Unicode mathematical notation instead:"
+         " Pₑ, Eᵦ, N₀, λ, εᵣ, √, ×, ÷, ≈, ≤, ≥, Ω, π, etc."
+        "- For numerical problems, preferably use:"
+        "-  Given:"
+        "- Formula:"
+        "- Substitution:"
+        "- Calculation:"
+        "- Answer:"
+        "- Keep the final response suitable for Telegram."
+        
     )
 
     messages = [
@@ -2661,6 +2716,12 @@ def main():
         MessageHandler(
             filters.StatusUpdate.NEW_CHAT_MEMBERS,
             welcome_new_members,
+        )
+    )
+    application.add_handler(
+    MessageHandler(
+        filters.PHOTO,
+        handle_photo,
         )
     )
 
