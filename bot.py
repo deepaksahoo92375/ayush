@@ -85,6 +85,7 @@ TASK_WARNING_AFTER_MINUTES = int(os.getenv("TASK_WARNING_AFTER_MINUTES", "320"))
 GIST_ID = os.getenv("GIST_ID")
 GIST_TOKEN = os.getenv("GIST_TOKEN")
 GIST_FILENAME = os.getenv("GIST_FILENAME", "ayush_stats.json")
+FILTER_GIST_FILENAME = os.getenv("FILTER_GIST_FILENAME", "ayush_filters.json")
 
 OWNER_ID = (
     int(os.getenv("OWNER_ID"))
@@ -634,6 +635,8 @@ def snapshot_stats():
             ],
             "memory_sessions": len(chat_memory) if "chat_memory" in globals() else 0,
             "rate_limited_users": len(user_rate_limit) if "user_rate_limit" in globals() else 0,
+            "group_filter_count": group_filter_count()[0] if "group_filters" in globals() else 0,
+            "group_filter_group_count": group_filter_count()[1] if "group_filters" in globals() else 0,
             "uptime_text": str(timedelta(seconds=max(0, int(now - START_TIME)))),
             "server_time": datetime.now(ZoneInfo(REPORT_TIMEZONE)).isoformat(),
             "start_time": START_TIME,
@@ -1048,6 +1051,242 @@ SESSION_TIMEOUT = 1800
 
 user_rate_limit = {}
 RATE_LIMIT_SECONDS = 2
+
+
+# =========================================================
+# GROUP MESSAGE FILTERS
+# =========================================================
+# In groups/supergroups Ayush only processes normal text messages when the
+# message contains at least one configured trigger phrase. Matching is
+# case-insensitive and supports phrases anywhere in the message.
+#
+# Filters are stored per chat and persisted to the existing GitHub Gist
+# infrastructure so they survive GitHub Actions/VPS restarts.
+
+group_filters = defaultdict(set)
+group_filters_lock = threading.Lock()
+
+
+def normalize_filter_phrase(value):
+    """Normalize a trigger phrase for reliable case-insensitive matching."""
+    if value is None:
+        return ""
+    value = str(value).strip()
+    if not value:
+        return ""
+    value = re.sub(r"\s+", " ", value)
+    return value.casefold()
+
+
+def get_group_filters(chat_id):
+    """Return a copy of the configured filters for one group."""
+    if chat_id is None:
+        return set()
+    with group_filters_lock:
+        return set(group_filters.get(int(chat_id), set()))
+
+
+def message_matches_group_filter(chat_id, text):
+    """Return True when a group message contains a configured filter phrase."""
+    if chat_id is None or not text:
+        return False
+
+    normalized_text = normalize_filter_phrase(text)
+    if not normalized_text:
+        return False
+
+    with group_filters_lock:
+        filters_for_chat = tuple(group_filters.get(int(chat_id), set()))
+
+    return any(phrase in normalized_text for phrase in filters_for_chat)
+
+
+def add_group_filter(chat_id, phrase):
+    """Add a normalized filter phrase to a group."""
+    normalized = normalize_filter_phrase(phrase)
+    if not chat_id or not normalized:
+        return False, normalized
+
+    with group_filters_lock:
+        filters_for_chat = group_filters[int(chat_id)]
+        if normalized in filters_for_chat:
+            return False, normalized
+        filters_for_chat.add(normalized)
+    return True, normalized
+
+
+def remove_group_filter(chat_id, phrase):
+    """Remove a normalized filter phrase from a group."""
+    normalized = normalize_filter_phrase(phrase)
+    if not chat_id or not normalized:
+        return False, normalized
+
+    with group_filters_lock:
+        filters_for_chat = group_filters.get(int(chat_id))
+        if not filters_for_chat or normalized not in filters_for_chat:
+            return False, normalized
+
+        filters_for_chat.remove(normalized)
+        if not filters_for_chat:
+            group_filters.pop(int(chat_id), None)
+
+    return True, normalized
+
+
+def clear_group_filters(chat_id):
+    """Remove all filters from one group and return the number removed."""
+    if not chat_id:
+        return 0
+
+    with group_filters_lock:
+        filters_for_chat = group_filters.pop(int(chat_id), set())
+        return len(filters_for_chat)
+
+
+def _filters_snapshot():
+    """Return JSON-safe persistent filter data."""
+    with group_filters_lock:
+        return {
+            str(chat_id): sorted(values)
+            for chat_id, values in group_filters.items()
+            if values
+        }
+
+
+def load_group_filters_from_gist():
+    """Restore persistent group filters from the configured GitHub Gist."""
+    if not GIST_ID or not GIST_TOKEN:
+        print("ℹ️ Group filter persistence disabled: GIST_ID/GIST_TOKEN not configured.")
+        return
+
+    try:
+        response = requests.get(
+            f"https://api.github.com/gists/{GIST_ID}",
+            headers={
+                "Authorization": f"Bearer {GIST_TOKEN}",
+                "Accept": "application/vnd.github+json",
+            },
+            timeout=10,
+        )
+
+        if response.status_code >= 300:
+            print("Group filter restore skipped:", response.status_code)
+            return
+
+        item = response.json().get("files", {}).get(FILTER_GIST_FILENAME)
+        if not item:
+            print("ℹ️ No saved group filters found in Gist.")
+            return
+
+        data = json.loads(item.get("content", "") or "{}")
+        restored = 0
+        restored_groups = 0
+
+        if isinstance(data, dict):
+            with group_filters_lock:
+                group_filters.clear()
+                for chat_id, values in data.items():
+                    try:
+                        numeric_chat_id = int(chat_id)
+                    except (TypeError, ValueError):
+                        continue
+
+                    if not isinstance(values, list):
+                        continue
+
+                    normalized_values = set()
+                    for value in values:
+                        normalized = normalize_filter_phrase(value)
+                        if normalized:
+                            normalized_values.add(normalized)
+
+                    if normalized_values:
+                        group_filters[numeric_chat_id] = normalized_values
+                        restored += len(normalized_values)
+                        restored_groups += 1
+
+        print(
+            f"✅ Group filters restored: {restored} filter(s) "
+            f"across {restored_groups} group(s)."
+        )
+
+    except Exception as e:
+        print("Group filter restore error:", repr(e))
+        log_event("ERROR", f"Group filter restore failed: {repr(e)}")
+
+
+def push_group_filters_to_gist():
+    """Persist current group filters to the configured GitHub Gist."""
+    if not GIST_ID or not GIST_TOKEN:
+        return False
+
+    try:
+        response = requests.patch(
+            f"https://api.github.com/gists/{GIST_ID}",
+            headers={
+                "Authorization": f"Bearer {GIST_TOKEN}",
+                "Accept": "application/vnd.github+json",
+            },
+            json={
+                "files": {
+                    FILTER_GIST_FILENAME: {
+                        "content": json.dumps(
+                            _filters_snapshot(),
+                            indent=2,
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            },
+            timeout=10,
+        )
+
+        if response.status_code >= 300:
+            print(
+                "Group filter Gist update failed:",
+                response.status_code,
+                response.text[:1000],
+            )
+            return False
+
+        log_event("INFO", "Group filters persisted to Gist")
+        return True
+
+    except Exception as e:
+        print("Group filter Gist push error:", repr(e))
+        log_event("ERROR", f"Group filter persistence failed: {repr(e)}")
+        return False
+
+
+def group_filter_count():
+    """Return total configured filters and groups for dashboard/stat output."""
+    with group_filters_lock:
+        return (
+            sum(len(values) for values in group_filters.values()),
+            sum(1 for values in group_filters.values() if values),
+        )
+
+
+async def is_filter_manager(update, context):
+    """Allow group admins, owner, or sudo users to manage group filters."""
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not user or not chat:
+        return False
+
+    if is_sudo(user.id):
+        return True
+
+    if chat.type not in ("group", "supergroup"):
+        return False
+
+    try:
+        member = await context.bot.get_chat_member(chat.id, user.id)
+        return member.status in ("administrator", "creator")
+    except Exception as e:
+        print("Filter admin check failed:", repr(e))
+        return False
 
 
 # =========================================================
@@ -2161,6 +2400,214 @@ async def sudolist(
     )
 
 
+async def addfilter_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Add a case-insensitive trigger phrase for the current group."""
+    if not update.effective_user or not update.message or not update.effective_chat:
+        return
+
+    chat = update.effective_chat
+
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text(
+            "This command is for groups/supergroups only."
+        )
+        return
+
+    if not await is_filter_manager(update, context):
+        await update.message.reply_text(
+            "❌ Only group admins, the owner, or sudo users can manage Ayush filters."
+        )
+        return
+
+    phrase = " ".join(context.args).strip()
+    if not phrase:
+        await update.message.reply_text(
+            "Usage:\n/addfilter <phrase>\n\n"
+            "Example:\n"
+            "/addfilter good morning\n"
+            "/addfilter ayush bhai\n"
+            "/addfilter telecommunications"
+        )
+        return
+
+    if len(phrase) > 200:
+        await update.message.reply_text(
+            "❌ Filter phrase must be 200 characters or less."
+        )
+        return
+
+    added, normalized = add_group_filter(chat.id, phrase)
+
+    if not added:
+        await update.message.reply_text(
+            f"ℹ️ This filter already exists:\n<code>{normalized}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    persisted = await asyncio.to_thread(push_group_filters_to_gist)
+    persistence_note = (
+        "💾 Saved permanently."
+        if persisted
+        else "⚠️ Added for this running instance, but Gist persistence is not configured or failed."
+    )
+
+    await update.message.reply_text(
+        "✅ <b>Filter added</b>\n\n"
+        f"Trigger: <code>{normalized}</code>\n"
+        "Matching: case-insensitive + phrase/substring\n"
+        f"{persistence_note}",
+        parse_mode="HTML",
+    )
+
+
+async def removefilter_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Remove a case-insensitive trigger phrase from the current group."""
+    if not update.effective_user or not update.message or not update.effective_chat:
+        return
+
+    chat = update.effective_chat
+
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text(
+            "This command is for groups/supergroups only."
+        )
+        return
+
+    if not await is_filter_manager(update, context):
+        await update.message.reply_text(
+            "❌ Only group admins, the owner, or sudo users can manage Ayush filters."
+        )
+        return
+
+    phrase = " ".join(context.args).strip()
+    if not phrase:
+        await update.message.reply_text(
+            "Usage:\n/removefilter <phrase>\n\n"
+            "Example:\n/removefilter good morning"
+        )
+        return
+
+    removed, normalized = remove_group_filter(chat.id, phrase)
+
+    if not removed:
+        await update.message.reply_text(
+            f"❌ Filter not found:\n<code>{normalized}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    persisted = await asyncio.to_thread(push_group_filters_to_gist)
+    persistence_note = (
+        "💾 Change saved permanently."
+        if persisted
+        else "⚠️ Removed from the running instance, but Gist persistence is not configured or failed."
+    )
+
+    await update.message.reply_text(
+        "✅ <b>Filter removed</b>\n\n"
+        f"Trigger: <code>{normalized}</code>\n"
+        f"{persistence_note}",
+        parse_mode="HTML",
+    )
+
+
+async def filters_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Show the configured filters for the current group."""
+    if not update.effective_user or not update.message or not update.effective_chat:
+        return
+
+    chat = update.effective_chat
+
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text(
+            "This command is for groups/supergroups only."
+        )
+        return
+
+    if not await is_filter_manager(update, context):
+        await update.message.reply_text(
+            "❌ Only group admins, the owner, or sudo users can view group filters."
+        )
+        return
+
+    configured = sorted(get_group_filters(chat.id))
+
+    if not configured:
+        await update.message.reply_text(
+            "📭 No message filters are configured for this group.\n\n"
+            "Add one with:\n"
+            "/addfilter <phrase>"
+        )
+        return
+
+    lines = ["🎯 <b>Ayush group filters</b>", ""]
+    for index, phrase in enumerate(configured, start=1):
+        lines.append(f"{index}. <code>{phrase}</code>")
+
+    lines.extend([
+        "",
+        "Matching is case-insensitive and works anywhere in a message.",
+        "Use /removefilter &lt;phrase&gt; to remove one.",
+    ])
+
+    await send_long_message(update.message, "\n".join(lines))
+
+
+async def clearfilters_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Remove all configured filters from the current group."""
+    if not update.effective_user or not update.message or not update.effective_chat:
+        return
+
+    chat = update.effective_chat
+
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text(
+            "This command is for groups/supergroups only."
+        )
+        return
+
+    if not await is_filter_manager(update, context):
+        await update.message.reply_text(
+            "❌ Only group admins, the owner, or sudo users can manage Ayush filters."
+        )
+        return
+
+    removed_count = clear_group_filters(chat.id)
+
+    if removed_count == 0:
+        await update.message.reply_text(
+            "ℹ️ This group has no configured filters."
+        )
+        return
+
+    persisted = await asyncio.to_thread(push_group_filters_to_gist)
+    persistence_note = (
+        "💾 Change saved permanently."
+        if persisted
+        else "⚠️ Cleared from the running instance, but Gist persistence is not configured or failed."
+    )
+
+    await update.message.reply_text(
+        "🧹 <b>All group filters cleared.</b>\n\n"
+        f"Removed: <b>{removed_count}</b>\n"
+        f"{persistence_note}",
+        parse_mode="HTML",
+    )
+
+
 # =========================================================
 # MESSAGE HANDLER
 # =========================================================
@@ -2172,6 +2619,17 @@ async def handle_photo(
         return
 
     photo = update.message.photo[-1]
+
+    # In groups/supergroups, image processing requires a matching
+    # trigger in the caption. Private-chat image behavior is unchanged.
+    chat = update.effective_chat
+    caption = (update.message.caption or "").strip()
+    if (
+        chat
+        and chat.type in ("group", "supergroup")
+        and not message_matches_group_filter(chat.id, caption)
+    ):
+        return
 
     try:
         file = await context.bot.get_file(photo.file_id)
@@ -2247,6 +2705,16 @@ async def handle_message(
 
     raw_text = update.message.text or ""
     text = sanitize_input(raw_text)
+
+    # In groups/supergroups, Ayush only responds when a configured
+    # trigger phrase appears. Private-chat behavior remains unchanged.
+    chat = update.effective_chat
+    if (
+        chat
+        and chat.type in ("group", "supergroup")
+        and not message_matches_group_filter(chat.id, text)
+    ):
+        return
 
     log_event(
         "INFO",
@@ -2785,11 +3253,18 @@ def main():
     print(f"Cerebras model: {CEREBRAS_MODEL}")
     print(f"Owner configured: {OWNER_ID is not None}")
     print(f"Sudo users: {len(SUDO_USERS)}")
+    print("Group filter mode: enabled")
+    print(
+        f"Group filters configured: {group_filter_count()[0]} "
+        f"across {group_filter_count()[1]} group(s)"
+    )
     print(f"Developer group configured: {DEVELOPER_GROUP_ID is not None}")
     print(f"Daily report: {DAILY_REPORT_HOUR:02d}:{DAILY_REPORT_MINUTE:02d} {REPORT_TIMEZONE}")
 
-    # Restore cumulative telemetry before starting background writers.
+    # Restore cumulative telemetry and persistent group filters before
+    # starting the background writers.
     load_persisted_stats()
+    load_group_filters_from_gist()
     log_event("INFO", "Ayush Bot process started")
 
     # Flask health server.
@@ -2855,6 +3330,20 @@ def main():
 
     application.add_handler(
         CommandHandler("sudolist", sudolist)
+    )
+
+    # Group message filter commands.
+    application.add_handler(
+        CommandHandler("addfilter", addfilter_command)
+    )
+    application.add_handler(
+        CommandHandler("removefilter", removefilter_command)
+    )
+    application.add_handler(
+        CommandHandler(["filters", "filterlist"], filters_command)
+    )
+    application.add_handler(
+        CommandHandler(["clearfilters", "clearfilter"], clearfilters_command)
     )
 
     # Friendly command menu for regular users.
