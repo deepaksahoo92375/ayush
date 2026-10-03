@@ -1087,7 +1087,7 @@ def get_group_filters(chat_id):
 
 
 def message_matches_group_filter(chat_id, text):
-    """Return True when a group message contains a configured filter phrase."""
+    """Return True when a message contains a filter belonging to this chat only."""
     if chat_id is None or not text:
         return False
 
@@ -1095,10 +1095,99 @@ def message_matches_group_filter(chat_id, text):
     if not normalized_text:
         return False
 
+    # IMPORTANT: only read the filter set keyed by this exact chat ID.
+    # A filter configured in Group A can therefore never authorize Group B.
     with group_filters_lock:
         filters_for_chat = tuple(group_filters.get(int(chat_id), set()))
 
     return any(phrase in normalized_text for phrase in filters_for_chat)
+
+
+# Cached bot username used for reliable @Ayush/@AyushBot detection.
+AYUSH_BOT_USERNAME = ""
+AYUSH_BOT_USERNAME_LOCK = asyncio.Lock()
+
+
+async def message_mentions_ayush(update, context, text=None):
+    """Return True when the user explicitly mentions/replies to Ayush.
+
+    This trigger is independent of group filters, so admins can configure
+    filters for a group while users can still directly address the bot.
+    Telegram entities are checked first; a safe text fallback is also used
+    for clients that do not populate mention entities consistently.
+    """
+    global AYUSH_BOT_USERNAME
+
+    message = getattr(update, "message", None)
+    if not message:
+        return False
+
+    # Replying directly to an Ayush message is treated as addressing Ayush.
+    reply = getattr(message, "reply_to_message", None)
+    if reply is not None:
+        reply_from = getattr(reply, "from_user", None)
+        if reply_from is not None and getattr(reply_from, "is_bot", False):
+            try:
+                me = await context.bot.get_me()
+                if me and reply_from.id == me.id:
+                    return True
+            except Exception:
+                pass
+
+    try:
+        if not AYUSH_BOT_USERNAME:
+            async with AYUSH_BOT_USERNAME_LOCK:
+                if not AYUSH_BOT_USERNAME:
+                    me = await context.bot.get_me()
+                    AYUSH_BOT_USERNAME = (getattr(me, "username", "") or "").casefold().lstrip("@").strip()
+
+        username = AYUSH_BOT_USERNAME
+        if not username:
+            return False
+
+        entities = getattr(message, "entities", None) or []
+        source_text = text if text is not None else (message.text or "")
+
+        # Telegram entity offsets/lengths are UTF-16 based. The entity itself
+        # is enough to establish that the bot's exact username was mentioned.
+        for entity in entities:
+            if getattr(entity, "type", None) == "mention":
+                try:
+                    mentioned = source_text.encode("utf-16-le")[2 * entity.offset:2 * (entity.offset + entity.length)].decode("utf-16-le")
+                except Exception:
+                    mentioned = source_text[entity.offset: entity.offset + entity.length]
+                if mentioned.casefold().lstrip("@").strip() == username:
+                    return True
+
+        # Fallback for messages where Telegram entities are missing.
+        return bool(re.search(r"(?<![A-Za-z0-9_])@" + re.escape(username) + r"(?![A-Za-z0-9_])", source_text, re.IGNORECASE))
+    except Exception as e:
+        print("Ayush mention detection failed:", repr(e))
+        return False
+
+
+async def group_message_is_triggered(update, context, text=None):
+    """Check whether a group message is allowed to reach the AI pipeline.
+
+    A group message is accepted when either:
+      1. it contains a filter configured for THIS exact group, or
+      2. it explicitly mentions Ayush, or
+      3. it is a reply to an Ayush message.
+
+    No filter state is shared between groups.
+    """
+    chat = update.effective_chat
+    if not chat or chat.type not in ("group", "supergroup"):
+        return True
+
+    source_text = text
+    if source_text is None and update.message:
+        source_text = update.message.text or update.message.caption or ""
+
+    if message_matches_group_filter(chat.id, source_text):
+        return True
+
+    return await message_mentions_ayush(update, context, source_text)
 
 
 def add_group_filter(chat_id, phrase):
@@ -2557,6 +2646,8 @@ async def filters_command(
     lines.extend([
         "",
         "Matching is case-insensitive and works anywhere in a message.",
+        "@Ayush mentions and replies to Ayush also trigger a response.",
+        "Filters are isolated per group; one group's filters never apply to another group.",
         "Use /removefilter &lt;phrase&gt; to remove one.",
     ])
 
@@ -2620,14 +2711,14 @@ async def handle_photo(
 
     photo = update.message.photo[-1]
 
-    # In groups/supergroups, image processing requires a matching
-    # trigger in the caption. Private-chat image behavior is unchanged.
+    # In groups/supergroups, image processing requires either a group-local
+    # filter match or an explicit @Ayush mention/reply.
     chat = update.effective_chat
     caption = (update.message.caption or "").strip()
     if (
         chat
         and chat.type in ("group", "supergroup")
-        and not message_matches_group_filter(chat.id, caption)
+        and not await group_message_is_triggered(update, context, caption)
     ):
         return
 
@@ -2706,13 +2797,13 @@ async def handle_message(
     raw_text = update.message.text or ""
     text = sanitize_input(raw_text)
 
-    # In groups/supergroups, Ayush only responds when a configured
-    # trigger phrase appears. Private-chat behavior remains unchanged.
+    # In groups/supergroups, Ayush responds to a filter configured for this
+    # exact group, or when explicitly mentioned/replied to.
     chat = update.effective_chat
     if (
         chat
         and chat.type in ("group", "supergroup")
-        and not message_matches_group_filter(chat.id, text)
+        and not await group_message_is_triggered(update, context, text)
     ):
         return
 
